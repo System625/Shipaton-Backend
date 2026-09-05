@@ -14,7 +14,8 @@
     "smoke:oembed": "tsx scripts/smoke-oembed.ts",
     "functions:serve": "supabase functions serve --env-file .env",
     "functions:deploy": "supabase functions deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:auth": "tsx scripts/verify-auth-rls.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

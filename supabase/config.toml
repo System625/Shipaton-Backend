@@ -3,7 +3,11 @@
 project_id = "shelf-backend"
 
 [db]
-major_version = 15
+# The remote project runs Postgres 17 (17.6.1.166, engine 17) — confirmed via the
+# Management API on 5 Sep 2026. This said 15, which would have started the local
+# stack on a different major version than production and let `db reset` pass on
+# SQL that production rejects. Keep the two in step.
+major_version = 17
 
 [functions.search]
 verify_jwt = true

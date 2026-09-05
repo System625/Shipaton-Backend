@@ -55,12 +55,14 @@ Twitch rejects those explicitly.
 **Nothing else is blocked on this.** Only the seed needs IGDB. The migrations,
 the schema check and the whole Supabase half can go ahead now.
 
-**Ask Josh for the Apple credentials in the same message.** Social sign-in is now
-decided (see Open decisions), which drags in Sign in with Apple, which needs Apple
-Developer Program membership plus a Services ID, Team ID, Key ID and a `.p8` private
-key. Store accounts are Josh's — so this is the *same* dependency shape as Twitch,
-and asking for it now rather than after the seed avoids waiting on him twice in
-sequence. With the deadline on 30 Sep, serialized waits are the expensive kind.
+**Ask Josh for the auth credentials in the same message.** Social sign-in is now
+decided (see Open decisions), which needs an Apple Developer Program membership and a
+Google Cloud project — both store/platform accounts, both Josh's, so this is the
+*same* dependency shape as Twitch. Asking now rather than after the seed avoids
+waiting on him twice in sequence; with the deadline on 30 Sep, serialized waits are
+the expensive kind. **The ask is smaller than it looks** — for iOS-native Apple
+sign-in, membership is the whole Apple requirement, no `.p8` or Services ID. See
+`docs/auth-setup.md` for the exact list and why.
 
 ---
 
@@ -117,6 +119,7 @@ Scripts in `scripts/`, all Node + tsx (**not** Deno):
 - `seed-platforms.ts` — must run before games; platform links FK to it
 - `seed-games.ts` — resumable, prints `SEED_RESUME_AFTER_ID` each page
 - `smoke-oembed.ts` — local oEmbed baseline
+- `verify-auth-rls.ts` — two real signed-in users, 18 RLS and token checks, self-cleaning
 
 Also done: docs moved out of `~/Downloads` into `docs/`, Supabase MCP server added
 at project scope in `.mcp.json`, `.env` pre-filled with the project ref and URL.
@@ -329,13 +332,52 @@ seam is the one Sola already built — keep it.
 **Steps 1–5 are the whole current app on real data, and are independent of
 everything below. If the deadline gets tight, that is the point worth reaching.**
 
-### 6. Auth and library sync
+### 6. Auth — **verification DONE, providers blocked on Josh and Sola**
 
-Pick the auth method (open, see below). **The RLS cross-user check is already
-done** — see step 3; two real accounts, reads and writes both blocked. What is not
-done is the same check through the real client with a real signed JWT rather than a
-simulated one, which is worth ten minutes once auth exists. Then migrate the app's
-Zustand store from AsyncStorage-only to synced.
+**Full detail is in `docs/auth-setup.md`.** Two things happened on 5 Sep:
+
+**The real-JWT check is done.** `npm run verify:auth` runs
+`scripts/verify-auth-rls.ts`, which signs two real users in and drives 18 checks
+through the tokens GoTrue actually issues — including `getUser()`, the exact call
+`http.ts` makes — instead of the `set_config` simulation used in step 3. All 18 pass.
+It creates and removes its own users and fixtures, so it is safe to re-run, and it is
+provider-agnostic: Google and Apple change who mints the identity, not the JWT shape
+or how RLS reads it.
+
+**The Apple ask to Josh is smaller than this doc previously claimed.** Services ID,
+Team ID, Key ID and `.p8` are needed only for the *OAuth* flow, which for this app
+means Android. Native iOS Sign in with Apple needs an App ID with the capability
+enabled, registered under *Client IDs*, and nothing else — Supabase's own guide:
+*"If you're building a native app only, you do not need to configure the OAuth
+settings."* That also drops the 6-month secret rotation, which is worth avoiding on a
+project sitting idle between 30 Sep and judging on 22 Oct. The cost is that an
+account made with Apple on iOS cannot sign back in on Android; 4.8 does not bind
+Android, so that is convenience, not compliance.
+
+Config applied the same day, with the CLI now logged in: **manual identity linking
+is on** (it was off, which mattered — see below), and `password_min_length` went 6 → 8.
+Leaked-password protection is **Pro-only** (`HTTP 402`), so it stays off on Free.
+`verify:auth` re-run after both changes: still 18/18.
+
+**A trap that is a product bug, not a setup detail.** Supabase links a new OAuth
+identity to an existing user *only when the email matches*. Apple's **Hide My Email**
+issues a `@privaterelay.appleid.com` relay address, which never matches a Google
+address — so one person signing in with Google and later with Apple gets **two
+`auth.users` rows**, and because `library_entries` keys on `user_id`, their whole
+shelf appears to vanish with no error. 4.8 requires the email-privacy option, so this
+is the path Apple pushes users toward. Cheapest fix is one provider per platform
+(Apple on iOS, Google on Android); that is a UI decision, so settle it before Sola
+builds the sign-in screen. Detail in `docs/auth-setup.md`.
+
+Also confirmed with the real CLI rather than MCP: `db push --dry-run` reports the
+remote up to date, and `config.toml` claimed Postgres 15 while the project runs 17.6
+— fixed, or the local stack would have run a different major version than production.
+
+Still blocked: Google Cloud and Apple Developer accounts are Josh's, and the bundle
+ID, Android package name, SHA-1 fingerprint and deep-link scheme are Sola's — none of
+them are recorded anywhere in this repo.
+
+Then migrate the app's Zustand store from AsyncStorage-only to synced.
 
 ### 7. Share ingestion
 
@@ -391,7 +433,10 @@ These are the ones that cost time if you hit them without warning.
 ## Open decisions
 
 - **Free vs Pro Supabase.** Free pauses after a week idle and caps the database at
-  500 MB. The seed is estimated at 100–150 MB with the trigram index, which fits but
+  500 MB. A third, smaller weight on the Pro side as of 5 Sep: leaked-password
+  protection (HaveIBeenPwned) is Pro-only and returns `HTTP 402` on Free. Not worth
+  upgrading for on its own — it guards the email/password fallback, not the real
+  sign-in path — but turn it on if you upgrade for the pause problem. The seed is estimated at 100–150 MB with the trigram index, which fits but
   without headroom. **That estimate is arithmetic and has never been measured** —
   take the real number after the seed and decide on it. Budget $25/month for October
   if it is close.
@@ -418,12 +463,25 @@ These are the ones that cost time if you hit them without warning.
   Ask Josh what the iOS distribution path actually is; the answer decides whether
   this is urgent or not.
 
-  What each provider needs, so the ask to Josh is complete:
+  What each provider needs — **corrected 5 Sep against Supabase's own auth guides**;
+  the row that changed is Apple's. Full reasoning in `docs/auth-setup.md`.
 
   | Provider | Needed | Whose account |
   |---|---|---|
-  | Google | OAuth client IDs (Web for Supabase, plus iOS/Android for native) | Google Cloud project — Josh's? |
-  | Apple | Membership, Services ID, Team ID, Key ID, `.p8` key | Josh's, per "store accounts are Josh's" |
+  | Google | OAuth client IDs — iOS, Android and Web, all three registered with Supabase, web first. No client secret on the native path | Google Cloud project — Josh's |
+  | Apple (iOS native) | Developer Program membership, and an App ID with the Sign in with Apple capability. **That is all** | Josh's, per "store accounts are Josh's" |
+  | Apple (Android, optional) | The above plus Services ID, Team ID, Key ID, `.p8` — and a secret regenerated every 6 months | Josh's |
+
+  The bundle ID, Android package name and Android SHA-1 signing fingerprint are
+  **Sola's**, not Josh's, and are recorded nowhere in this repo. Google's Android
+  client cannot be created without the fingerprint, so that ask has to go out too.
+
+  The earlier line here said Apple needed the Services ID and `.p8` outright. It does
+  not, for a native iOS app: *"If you're building a native app only, you do not need
+  to configure the OAuth settings."* Taking the native-only route also avoids Apple's
+  6-month secret rotation, which is a real hazard on a project that sits idle between
+  30 Sep and judging on 22 Oct. The price is that Apple sign-in does not work on
+  Android — 4.8 does not bind Android, so that is convenience, not compliance.
 
   Deep-link redirect URLs are needed either way, and the Expo cost is already sunk
   since Expo Go went for `expo-share-intent`.
@@ -462,6 +520,8 @@ These are the ones that cost time if you hit them without warning.
 - `docs/spec.md` — **read this before changing anything.** §1 IGDB vs RAWG, §3 schema,
   §4 field mapping, §5 title matching, §6 share ingestion, §7 the roulette problem
   and its resolution, §11 what happens if IGDB says no.
+- `docs/auth-setup.md` — what `verify:auth` proves, and the provider runbook for the
+  moment Josh's and Sola's values arrive.
 - `docs/decisions-for-josh.md` — the seven decisions, all approved.
 - `docs/technical-notes-for-sola.md` — what changes under the app scaffolding.
 - `docs/research/` — the verification prompt and three independent cross-check
