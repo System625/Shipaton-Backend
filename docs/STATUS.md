@@ -11,12 +11,16 @@ the vendor's own documentation on 4 Sep, so don't redo that research.
 
 ## The one-paragraph version
 
-The backend is fully scaffolded and typechecks, but **nothing has been run against
-a real service yet**. No migration has touched Postgres, no IGDB call has been made
-with real credentials. Two things gate that: Supabase MCP authentication (a
-`/mcp` command away) and Twitch credentials (**blocked**, see below). Everything
-between here and a working `/search` on real data is about an afternoon, once the
-credentials exist.
+**The Supabase half is done and verified against the real project.** All eight
+migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer matches the spec's
+worked example exactly, search and roulette were exercised against seeded rows, and
+RLS was confirmed to isolate two real accounts — read *and* write. The catalog is
+deliberately empty again: the rows used to prove it were removed afterwards.
+
+What remains is IGDB. No IGDB call has been made with real credentials, and Twitch
+is still **blocked** (see below), so the seed is the only thing standing between
+here and a working `/search` on real data. `SUPABASE_SERVICE_ROLE_KEY` still needs
+pasting from the dashboard before the seed can write.
 
 ---
 
@@ -55,7 +59,9 @@ the schema check and the whole Supabase half can go ahead now.
 
 ## What is built
 
-Five migrations in `supabase/migrations/`, applied in filename order:
+Ten migrations in `supabase/migrations/`, applied in filename order — **all of
+them applied to the real project**, with the recorded history repaired to match
+these filenames so `db push` is a no-op:
 
 | File | What it does |
 |---|---|
@@ -64,6 +70,11 @@ Five migrations in `supabase/migrations/`, applied in filename order:
 | `…000300_rls.sql` | catalog readable by `authenticated`, user data owner-only |
 | `…000400_matching.sql` | `shelf_match_title()` + a trigger that keeps it current |
 | `…000500_search_and_roulette.sql` | `shelf_search_games()`, `shelf_roulette()` |
+| `…000600_match_title_apostrophes.sql` | apostrophes dropped, not spaced — see step 3 |
+| `…000700_revoke_anon_execute.sql` | actually revokes `anon` EXECUTE; 000500 did not |
+| `…000800_fk_indexes.sql` | covering indexes for three unindexed foreign keys |
+| `…000900_alt_titles.sql` | `game_alt_titles` + abbreviation-aware `shelf_search_games()` |
+| `…001000_alt_title_noise.sql` | drops alt titles normalizing to under 2 chars (CJK, Cyrillic) |
 
 Three decisions in there worth knowing before you edit any of it:
 
@@ -103,9 +114,11 @@ Scripts in `scripts/`, all Node + tsx (**not** Deno):
 Also done: docs moved out of `~/Downloads` into `docs/`, Supabase MCP server added
 at project scope in `.mcp.json`, `.env` pre-filled with the project ref and URL.
 
-### Two bugs already found and fixed
+### Bugs already found and fixed
 
-Found by running the extraction code rather than reading it:
+The first two were found by running the extraction code rather than reading it; the
+three in step 3 were found the same way, by running the SQL against a real Postgres
+rather than reviewing it:
 
 1. The YouTube title cleaner dropped everything after a colon — "Hollow Knight:
    Silksong – Announcement Trailer" became "Hollow Knight". Now keeps every segment
@@ -119,42 +132,149 @@ Found by running the extraction code rather than reading it:
 
 ## What to do next, in order
 
-### 1. Authenticate the Supabase MCP server
+### 1. Authenticate the Supabase MCP server — **DONE**
 
-In a **regular terminal**, not the IDE extension:
+### 2. Fill in `.env` — **DONE except Twitch**
 
-```
-/mcp
-```
+`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL` are all set and
+**verified against the live project over HTTP**: the service-role key reads the
+catalog with RLS bypassed, the anon key is correctly blocked and returns `[]`. Only
+the two Twitch values are outstanding, and they wait on the blocker above.
 
-Select `supabase`, then Authenticate. After that, Claude can apply the migrations
-and query the project directly instead of you driving the CLI by hand.
+`DATABASE_URL` is set, but note that **nothing in the repo reads it** — the old
+comment calling it "used by the seed script for bulk COPY-style inserts" was wrong.
+No code opens a direct Postgres connection; the seed writes through PostgREST with
+the service-role key (`scripts/supabase-admin.ts`). Harmless to keep for psql access,
+just don't expect it to be load-bearing.
 
-### 2. Fill in `.env`
+### 3. Push the schema — **DONE, and it surfaced things**
 
-Already set: `SUPABASE_PROJECT_REF`, `SUPABASE_URL`. Still needed:
-`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL` (Project Settings
-→ Database → Connection string). The two Twitch values wait on the blocker above.
+All ten migrations are applied and the recorded migration history was repaired to
+match the filenames exactly, so `npx supabase db push` is now a clean no-op rather
+than an attempt to re-run everything. Applied through MCP; the CLI was never
+`supabase login`-ed, which is why the versions needed repairing at all.
 
-### 3. Push the schema
+The DDL itself applied without a single error — the "expect this step to surface
+something" warning was right, but not about the SQL failing. What it surfaced:
 
-```sh
-npx supabase link --project-ref sbunhrxwhraigwpidbxk
-npx supabase db push
-```
+**The normalizer had an apostrophe bug** (fixed, migration `…000600`). The
+`[^a-z0-9 ]` class turned every apostrophe into a space, so "Baldur's Gate 3"
+normalized to `baldur s gate 3` with a stranded "s". The typed case survived it
+(0.72, still confident), but the **run-together hashtag path did not** — and that
+is the path share ingestion depends on:
 
-**This is the first real test of the SQL** — there was no Docker on this machine, so
-no local Postgres to validate it against. Expect this step to surface something.
+| catalog | typed | before | after |
+|---|---|---|---|
+| No Man's Sky | `nomanssky` | 0.294 | 0.375 |
+| Garry's Mod | `garrysmod` | 0.467 | 0.615 |
+| Dragon's Dogma 2 | `dragonsdogma2` | 0.429 | 0.526 |
+| Baldur's Gate 3 | `baldurs gate 3` | 0.722 | 1.000 |
 
-Then check the normalizer against the spec's own worked example:
+At 0.294 "No Man's Sky" was not merely ranked low, it was **invisible**: `%` filters
+at `pg_trgm.similarity_threshold` (0.30), so the row never came back at all. Every
+measured case improved, none regressed.
 
-```sql
-select shelf_match_title('The Witcher III: Wild Hunt - Game of the Year Edition');
--- must return: the witcher 3 wild hunt
-```
+**`anon` had EXECUTE on the functions** despite migration `…000500` trying to revoke
+it (fixed, migration `…000700`). `revoke ... from public` only drops the implicit
+PUBLIC grant; Supabase's default privileges also add an *explicit* `anon=X` grant,
+which the revoke slid straight past. Nothing was exposed — both functions are
+SECURITY INVOKER, so anon hit RLS and got zero rows — but the migration's comment
+claimed a property the catalog did not have.
 
-If `similarity()` or the `%` operator reports "function does not exist", that is the
-search path, not a missing extension.
+**Three foreign keys had no covering index** (fixed, migration `…000800`), all on
+the small per-user tables. The one that mattered is `library_entries.game_id`:
+without it every catalog re-seed forces a sequential scan to check the reference.
+
+Verified while the test rows were in place, then cleaned up:
+
+- `shelf_match_title` — 22/22 cases, including the spec's own worked example
+  (`The Witcher III: Wild Hunt - Game of the Year Edition` → `the witcher 3 wild
+  hunt`), the U+2019 typographic apostrophe, and `Director's Cut`.
+- The documented `#eldenring` arithmetic in `oembed.ts` **checks out at 0.615**.
+- `/search` ranking: exact titles 1.00, `cyberpunk` → Cyberpunk 2077 at 0.67,
+  `witcher 3` → 0.45 (plausible, not confident — see thresholds below).
+- `shelf_roulette` returns rows under a real JWT, ranks a `playing` game above
+  `backlog` on a short evening, and **never came back empty** for a big-RPG backlog
+  at any session length from 0.5h to 8h — the exact trap it exists to prevent.
+- **RLS isolates two real accounts.** B could not read A's rows, could not write to
+  them (0 rows affected), and calling `shelf_roulette` with A's uuid returned
+  nothing. `anon` sees 0 rows across all five tables and now has EXECUTE on nothing.
+
+### 3b. Abbreviations — **DONE**
+
+`bg3`, `gta v`, `gta5` and `zelda botw` used to return **nothing** — not a low score,
+nothing. Trigram similarity shares almost no trigrams between an abbreviation and a
+full title, so `%` filtered them out before ranking ran. Fixed in `…000900`, which
+adds `game_alt_titles` fed from IGDB's `alternative_names`.
+
+> **Read the numbers below carefully — they were measured against hand-written rows,
+> not IGDB data.** No IGDB call has ever been made (see the blocker: no Twitch
+> credentials). The alternative titles used in this test were typed from memory, so
+> the table shows the *ranking mechanism* working end to end. It does **not** show
+> that IGDB supplies an acronym for any particular game. **Coverage is unmeasured
+> and is the first thing to check during the seed.**
+
+| query | before | after |
+|---|---|---|
+| `bg3` | nothing | Baldur's Gate 3 (0.98) |
+| `gta v` | nothing | Grand Theft Auto V (0.98) |
+| `gta5` | nothing | Grand Theft Auto V (0.37) |
+| `zelda botw` | nothing | Breath of the Wild (0.98) |
+| `cp2077` | nothing | Cyberpunk 2077 (0.98) |
+| `tw3` | nothing | The Witcher 3 (0.98) |
+| `witcher 3` | 0.45 | 0.70 — crossed into "confident" |
+
+Nothing regressed: `elden ring` 1.00, `#eldenring` 0.62, the GOTY round trip 1.00.
+
+**What IS verified about IGDB**, from its own published type definitions rather than
+recollection: `Game.alternative_names` exists, `AlternativeName.name` is optional
+(so it can be missing, and the mapper guards for it), and `AlternativeName.comment`
+is documented as *"A description of what kind of alternative name it is (Acronym,
+Working title, Japanese title etc)"* — so Acronym is a real category, not a guess.
+What is **not** verified is how many games actually carry one.
+
+**That same field carries CJK and Cyrillic**, which `shelf_match_title` reduces to
+junk, because it strips everything outside `[a-z0-9 ]`:
+
+| alternative title | normalizes to |
+|---|---|
+| `ゼルダの伝説 ブレス オブ ザ ワイルド` | `` (empty) |
+| `Ведьмак 3: Дикая Охота` | `3` |
+| `巫师3：狂猎` | `3` |
+| `BG3` | `bg3` |
+
+Migration `…001000` drops anything normalizing to under two characters, at write
+time, in the trigger. The empty rows could never match; the `3` rows were worse —
+real trigram index entries that would attach short numeric queries to whichever game
+happened to have a Russian title. Two characters is the floor because real acronyms
+go that short ("ER"). Verified: 9 rows in, 4 kept, junk dropped silently without
+failing the insert — which matters because one bad alternative title must not kill a
+500-row seed page.
+
+**A child table, not a `text[]` on `games`, and that choice is load-bearing.**
+pg_trgm cannot index array elements, so an array would only support exact `@>`
+matching. That fixes `bg3` but still misses `gta5` (alt "GTA V" normalizes to
+`gta 5` — close, not equal) and `zelda botw` (an extra word). Fuzzy needs a real
+trigram index, and a trigram index needs a row per title.
+
+Three things about it worth knowing before editing:
+
+- **Keyed on the normalized title**, not the raw one. IGDB lists several spellings
+  that normalize identically — "GTA V", "GTA 5" and "Grand Theft Auto 5" collapse to
+  two rows, not three. Verified that the collision is handled *within a single
+  insert*, which is exactly what PostgREST sends during the seed: `on conflict do
+  nothing` resolves it silently rather than erroring.
+- **Alt matches are scaled by 0.98** so a canonical-title match outranks an
+  alternative-title match of equal raw similarity. It only ever breaks ties between
+  *different* games; a game matching on both keeps the higher score.
+- **Alt-title writes are warn-only** in both the seed and `ingest.ts`, like platform
+  links. A game with no alt titles is fine; losing them costs a few fuzzy matches,
+  not the catalog row.
+
+Confirmed working under a real `authenticated` JWT, not just as superuser — the
+function is SECURITY INVOKER, so a missing policy on `game_alt_titles` would have
+made abbreviation search fail silently for real users while passing every test run
+as `postgres`.
 
 ### 4. Seed the catalog — needs IGDB credentials
 
@@ -166,6 +286,28 @@ npm run seed:games
 
 Then spot-check that DLC, bundles and editions did *not* come through, and record
 the real database size — see the free-vs-Pro decision below.
+
+**Also measure alternative-title coverage, which is currently a guess.** The seed
+prints a running `alt titles:` count, but the number that matters is how many games
+got a *usable* one:
+
+```sql
+-- what fraction of the catalog has any alternative title at all
+select count(*) filter (where a.game_id is not null)::float / count(*) as coverage
+  from games g left join (select distinct game_id from game_alt_titles) a
+    on a.game_id = g.id;
+
+-- do the abbreviations people actually type resolve?
+select shelf_search_games('bg3', 1);
+select shelf_search_games('gta v', 1);
+select shelf_search_games('botw', 1);
+```
+
+If coverage is thin, `game_alt_titles` is helping less than the numbers in step 3b
+suggest — those were measured against hand-written rows, not IGDB output. The
+fallback if IGDB's acronym data is poor is a small hand-curated alias list for the
+50 or so games most likely to be searched by abbreviation; the table and the search
+path already exist, so that would be a data problem, not a code change.
 
 ### 5. `/search` and `/games/:id` live ← **the milestone that matters**
 
@@ -182,9 +324,11 @@ everything below. If the deadline gets tight, that is the point worth reaching.*
 
 ### 6. Auth and library sync
 
-Pick the auth method (open, see below). Then verify RLS actually isolates users by
-signing in as two accounts and trying to read across — do not take the policy's word
-for it. Then migrate the app's Zustand store from AsyncStorage-only to synced.
+Pick the auth method (open, see below). **The RLS cross-user check is already
+done** — see step 3; two real accounts, reads and writes both blocked. What is not
+done is the same check through the real client with a real signed JWT rather than a
+simulated one, which is worth ten minutes once auth exists. Then migrate the app's
+Zustand store from AsyncStorage-only to synced.
 
 ### 7. Share ingestion
 
@@ -226,6 +370,11 @@ These are the ones that cost time if you hit them without warning.
   `ingest.ts` and the seed reads it. That rule is what kept the RAWG→IGDB switch to
   one afternoon, and it is what keeps the RAWG fallback (spec §11) a sync-layer
   change rather than a rewrite.
+- **`search_cache` is referenced by no code at all.** The table exists with RLS on
+  and no policy, which the Supabase linter reports as INFO. That is the correct
+  locked-down posture for a table only the service role should write, so it was left
+  alone — but nothing reads or writes it today. Either wire it up or drop it; don't
+  assume it is doing something.
 - **Free-tier Supabase pauses after 1 week of inactivity**, and judging runs to
   22 Oct. A paused backend during judging means judges open the app and it does not
   work.
@@ -246,7 +395,14 @@ These are the ones that cost time if you hit them without warning.
   names. Confirm the real union against Sola's app and replace it, or the coloured
   swatch fallback renders wrong.
 - **pg_trgm thresholds** (0.55 confident, 0.30 plausible) are a starting point, not a
-  result. Tune against real queries.
+  result. Tune against real queries. First real data point: `witcher 3` scores 0.45
+  against "The Witcher 3: Wild Hunt" — a very common way to type it, landing in
+  "plausible" rather than "confident". Partial-title queries generally score lower
+  than feels right, because trigram similarity penalises the missing words. Worth
+  revisiting once the catalog is seeded and the scores are measured at scale rather
+  than against eight rows.
+  Note `witcher 3` already moved 0.45 → 0.70 once alternative titles landed, so
+  re-measure after the seed rather than tuning against the old numbers.
 
 ## Settled, do not reopen
 
