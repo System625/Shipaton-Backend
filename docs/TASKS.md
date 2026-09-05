@@ -30,7 +30,13 @@ else. **If the deadline gets tight, that is the point worth reaching.**
 
 ## 2. Catalog seeded
 
-- [ ] Twitch app created, Client ID + Secret in `.env`
+- [ ] Twitch app created, Client ID + Secret in `.env`. Twitch needs a verified
+      email **and 2FA enabled** before it will let you register anything. IGDB's own
+      docs are specific about two fields: the OAuth Redirect URL "is not used by
+      IGDB, please add 'localhost' to continue", and **Client Type must be
+      Confidential** or there is no [New Secret] button at all.
+- [ ] `npm run verify:igdb` — proves the token, the query, the `game_type` filter
+      and the seconds-to-hours conversion in one go. Run it before the seed.
 - [ ] `npm run seed:platforms` (must run first — game platform links FK to it)
 - [ ] `npm run seed:games`. Resumable: the script prints `SEED_RESUME_AFTER_ID`
       each page, so an interrupted run picks up where it stopped.
@@ -76,18 +82,14 @@ else. **If the deadline gets tight, that is the point worth reaching.**
 
 **Chase these; they do not resolve themselves.**
 
-- [ ] **Google Play account: personal or organisation?** Still unanswered by Josh —
-      it was a question rather than a numbered decision, which is likely why it
-      slipped. A personal account created after 13 Nov 2023 needs 12 testers opted
-      in for 14 continuous days *before* production access, and once Google's review
-      time is counted the real cutoff for starting that closed test was **~6 Sep**.
-      All three cross-check reports converged on 6–8 Sep. This is the live risk on
-      the whole entry and it is not a backend problem — but it is the one worth
-      asking about first.
-- [ ] **IGDB partnership email to partner@igdb.com.** Josh agreed to send it on
-      4 Sep; unconfirmed whether it went. Nothing in the build waits on the reply,
-      but the request needs to be on record dated before ship. No published
-      turnaround exists, so assume no answer inside the contest window.
+- **Google Play — not tracked here.** Descoped from this repo on 5 Sep at Tunde's
+      call. The 12-tester / 14-day arithmetic and the ~6 Sep cutoff are recorded in
+      `spec.md` and the cross-check reports if anyone needs them later. Store
+      accounts are Josh's.
+- [x] **IGDB partnership email to partner@igdb.com — sent.** Confirmed 5 Sep. The
+      request is now on record dated before ship, which is what it was for. No
+      published turnaround exists, so assume no reply inside the contest window;
+      nothing in the build waits on one.
 - [ ] **`CoverColorKey`** in `_shared/catalog-game.ts` is a placeholder set of seven
       names. Confirm the real union against Sola's app and replace it, or the swatch
       fallback renders wrong.
