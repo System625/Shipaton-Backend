@@ -20,12 +20,15 @@ Postgres          IGDB API
 **The build spec is [`docs/spec.md`](docs/spec.md).** It is written so you can
 implement from it without redoing the research, and every external claim in it was
 checked against the vendor's own documentation on 4 Sep 2026. Read it before
-changing anything here. [`docs/TASKS.md`](docs/TASKS.md) is the running build order.
+changing anything here. [`docs/STATUS.md`](docs/STATUS.md) is the pickup doc — what
+is built, what is blocked, and what to do next, in order.
 
 ## Layout
 
 ```
-docs/                            spec, decisions, notes, cross-check reports
+docs/STATUS.md                   start here: state, blockers, next steps
+docs/spec.md                     the build spec and all the reasoning
+docs/research/                   independent cross-check reports
 supabase/migrations/             schema, RLS, matching, search + roulette SQL
 supabase/functions/_shared/      IGDB client, ingest, CatalogGame, oEmbed
 supabase/functions/<name>/       one edge function per endpoint

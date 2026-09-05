@@ -5,7 +5,7 @@
 export type PlatformRef = { id: number; name: string; slug: string };
 
 // NOTE: these keys must match Sola's `CoverColorKey` union in the app. They are a
-// placeholder until that union is confirmed against the app repo — see docs/TASKS.md.
+// placeholder until that union is confirmed against the app repo — see docs/STATUS.md.
 export const COVER_COLOR_KEYS = [
   "amber", "rose", "violet", "indigo", "teal", "emerald", "slate",
 ] as const;
