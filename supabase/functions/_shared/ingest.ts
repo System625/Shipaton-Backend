@@ -11,7 +11,7 @@ import {
   type IgdbGame,
   type IgdbTimeToBeat,
 } from "./igdb.ts";
-import { fetchTimeToBeats, mapIgdbGame } from "./mapping.ts";
+import { fetchTimeToBeats, mapAltTitles, mapIgdbGame } from "./mapping.ts";
 
 export async function upsertGames(
   admin: SupabaseClient,
@@ -53,7 +53,36 @@ export async function upsertGames(
     }
   }
 
+  await upsertAltTitles(admin, games, idByIgdb);
+
   return written;
+}
+
+/**
+ * Alternative titles ("BG3", "GTA V", "BotW"), which is what makes abbreviation
+ * search work at all. Best-effort by design: a game with no alt titles is fine, and
+ * losing them costs a few fuzzy matches, not the catalog row. So this never fails
+ * the whole ingest -- unlike game_platforms, where a missing link means the roulette
+ * silently cannot see the game on that platform.
+ */
+async function upsertAltTitles(
+  admin: SupabaseClient,
+  games: IgdbGame[],
+  idByIgdb: Map<number, string>,
+): Promise<void> {
+  const rows = games.flatMap((g) => {
+    const gameId = idByIgdb.get(g.id);
+    return gameId ? mapAltTitles(g, gameId) : [];
+  });
+  if (rows.length === 0) return;
+
+  // onConflict is the (game_id, match_title) primary key, but match_title is set by
+  // a BEFORE trigger and is not known client-side, so conflicts cannot be named
+  // here. ignoreDuplicates keeps a re-seed idempotent instead of erroring.
+  const { error } = await admin
+    .from("game_alt_titles")
+    .upsert(rows, { onConflict: "game_id,match_title", ignoreDuplicates: true });
+  if (error) console.warn(`game_alt_titles upsert skipped: ${error.message}`);
 }
 
 /** One IGDB search, ingested into the catalog. The on-miss path, not the norm. */

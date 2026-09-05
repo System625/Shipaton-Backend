@@ -90,6 +90,9 @@ export type IgdbGame = {
   game_type?: number; // 0 = main_game
   parent_game?: number;
   version_parent?: number;
+  // Abbreviations, regional titles and alternate spellings. Written to
+  // game_alt_titles, not to a column on games.
+  alternative_names?: { name: string }[];
 };
 
 export type IgdbTimeToBeat = {
@@ -109,9 +112,19 @@ export type IgdbPlatform = {
   platform_family?: number;
 };
 
+// `alternative_names.name` is what lets "bg3" and "gta v" match anything at all: an
+// abbreviation shares almost no trigrams with the full title, so without it those
+// queries return nothing (see migration 20260905000900_alt_titles.sql).
+//
+// The field carries more than acronyms -- IGDB documents `comment` as "(Acronym,
+// Working title, Japanese title etc)" -- so a lot of what comes back is CJK and
+// Cyrillic that normalizes to junk. Migration 20260905001000 filters that at write
+// time. How much useful acronym coverage IGDB actually has is UNMEASURED; check it
+// during the seed. Requesting the field costs nothing now and a full re-seed later.
 export const GAME_FIELDS =
   "fields name, slug, first_release_date, cover.image_id, genres.name, platforms, " +
-  "aggregated_rating, game_modes.name, keywords.name, game_type, parent_game, version_parent;";
+  "aggregated_rating, game_modes.name, keywords.name, game_type, parent_game, " +
+  "version_parent, alternative_names.name;";
 
 /**
  * Search IGDB. Filters to main games only — without `game_type = 0`, "Elden Ring"

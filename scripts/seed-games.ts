@@ -17,7 +17,11 @@ import {
   seedPageQuery,
   type IgdbGame,
 } from "../supabase/functions/_shared/igdb.ts";
-import { fetchTimeToBeats, mapIgdbGame } from "../supabase/functions/_shared/mapping.ts";
+import {
+  fetchTimeToBeats,
+  mapAltTitles,
+  mapIgdbGame,
+} from "../supabase/functions/_shared/mapping.ts";
 import { igdbCreds } from "./env.ts";
 import { admin } from "./supabase-admin.ts";
 
@@ -30,6 +34,7 @@ console.log(`seeding games released since ${since} (igdb id > ${resumeFrom})`);
 
 let after = resumeFrom;
 let total = 0;
+let altTotal = 0;
 
 for (;;) {
   const page = await igdbQuery<IgdbGame>(creds, "games", seedPageQuery(after, sinceUnix));
@@ -60,10 +65,24 @@ for (;;) {
     if (linkError) console.warn(`  platform links skipped at id ${after}: ${linkError.message}`);
   }
 
+  // Alternative titles ("BG3", "GTA V", "BotW"). Warn-only for the same reason as
+  // platform links: one bad page must not kill a long resumable run.
+  const altRows = page.flatMap((g) => {
+    const gameId = idByIgdb.get(g.id);
+    return gameId ? mapAltTitles(g, gameId) : [];
+  });
+  if (altRows.length > 0) {
+    const { error: altError } = await admin
+      .from("game_alt_titles")
+      .upsert(altRows, { onConflict: "game_id,match_title", ignoreDuplicates: true });
+    if (altError) console.warn(`  alt titles skipped at id ${after}: ${altError.message}`);
+    else altTotal += altRows.length;
+  }
+
   total += page.length;
   after = page[page.length - 1].id;
   // Resume point, so an interrupted seed does not start over.
-  console.log(`games: ${total}  (SEED_RESUME_AFTER_ID=${after})`);
+  console.log(`games: ${total}  alt titles: ${altTotal}  (SEED_RESUME_AFTER_ID=${after})`);
 }
 
-console.log(`done. ${total} games.`);
+console.log(`done. ${total} games, ${altTotal} alternative titles.`);

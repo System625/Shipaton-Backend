@@ -74,6 +74,44 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
   };
 }
 
+export type AltTitleUpsert = {
+  game_id: string;
+  alt_title: string;
+  match_title: string; // overwritten by the game_alt_titles_match_title trigger
+};
+
+/**
+ * IGDB alternative names -> game_alt_titles rows. This is where "BG3", "GTA V" and
+ * "BotW" come from; without them those queries match nothing at all.
+ *
+ * Two things are dropped here rather than in SQL:
+ *  - anything equal to the game's own title, which would just duplicate a row the
+ *    search already matches on games.match_title
+ *  - blanks and whitespace-only entries, which IGDB does occasionally return
+ *
+ * Near-duplicates that only collide AFTER normalization ("GTA V" vs "GTA 5") are
+ * NOT filtered here, deliberately: normalization is the database's job, and the
+ * (game_id, match_title) primary key collapses them on insert. Doing it in
+ * TypeScript would mean reimplementing shelf_match_title, which is the one thing
+ * spec section 5 exists to prevent.
+ */
+export function mapAltTitles(game: IgdbGame, gameId: string): AltTitleUpsert[] {
+  const seen = new Set<string>();
+  const out: AltTitleUpsert[] = [];
+  for (const alt of game.alternative_names ?? []) {
+    const name = (alt?.name ?? "").trim();
+    if (name === "") continue;
+    if (name.toLowerCase() === game.name.trim().toLowerCase()) continue;
+    // Cheap exact-duplicate guard so one page does not send the same row twice;
+    // the real dedupe is the primary key.
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ game_id: gameId, alt_title: name, match_title: name });
+  }
+  return out;
+}
+
 /** Time to beat is a separate endpoint, and not every game has an entry. */
 export async function fetchTimeToBeats(
   creds: IgdbCredentials,
