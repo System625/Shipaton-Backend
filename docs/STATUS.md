@@ -388,9 +388,26 @@ These are the ones that cost time if you hit them without warning.
   without headroom. **That estimate is arithmetic and has never been measured** —
   take the real number after the seed and decide on it. Budget $25/month for October
   if it is close.
-- **Auth method.** Nothing in the spec settles it. Email magic link is the least
-  setup; Apple sign-in becomes effectively mandatory if the iOS build ships any other
-  social login.
+- **Auth method.** Nothing in the spec settles it, but the options are not
+  symmetric. Apple's App Store guideline 4.8 requires Sign in with Apple only if the
+  app offers a **third-party** sign-in — email magic link is not third-party, so
+  magic-link-only sidesteps building Apple sign-in entirely, while adding Google
+  commits you to building Apple too. Magic link also needs a deep link back into the
+  app, which costs Expo Go — but that is **already sunk**, because Expo Go was dropped
+  for `expo-share-intent`. So the expensive part of magic link is paid for.
+  **Recommendation: magic link**, unless Josh wants social sign-in for demo polish.
+  It is the least setup and the only option that does not drag a second provider along
+  with it before 30 Sep.
+
+  **Note where auth actually lives.** This backend implements none of it: there is no
+  login endpoint to write, because `_shared/http.ts` builds a client from the caller's
+  JWT and lets RLS apply — Supabase Auth *is* the auth server. The sign-in flow,
+  session storage, token refresh and deep-link handling all belong in Sola's repo.
+  What belongs here is project configuration (providers, redirect URLs, email
+  template) and one verification: **re-check RLS with a real signed JWT.** The check
+  recorded in step 3 simulated the session with `set_config('request.jwt.claims', …)`,
+  which exercises the policies correctly but not the real token path — issuer, expiry,
+  and the `sub` claim landing where `auth.uid()` reads it.
 - **`CoverColorKey`** in `_shared/catalog-game.ts` is a placeholder set of seven
   names. Confirm the real union against Sola's app and replace it, or the coloured
   swatch fallback renders wrong.
