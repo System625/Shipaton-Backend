@@ -35,6 +35,17 @@ else. **If the deadline gets tight, that is the point worth reaching.**
       docs are specific about two fields: the OAuth Redirect URL "is not used by
       IGDB, please add 'localhost' to continue", and **Client Type must be
       Confidential** or there is no [New Secret] button at all.
+      - **Blocked 5 Sep:** Twitch returns `INVALID_PHONE_NUMBER` for Tunde's
+        Nigerian mobile (+234, correctly formatted). There is no way around this
+        with an authenticator app — Twitch's own 2FA article says, verbatim, "SMS
+        verification is always required first, even if you plan to use an
+        authenticator app." Twitch's 2FA phone layer is Authy, so the rejection is
+        Authy/Twilio validation, not a formatting mistake.
+      - Whose Twitch account the app lives under does not matter to IGDB, only the
+        client id does. If the number cannot be verified, register it under Josh's
+        account — he owns the business side and sent the partnership email, so if
+        IGDB approves and ties the partnership to a client id, that is arguably
+        where it should have been anyway.
 - [ ] `npm run verify:igdb` — proves the token, the query, the `game_type` filter
       and the seconds-to-hours conversion in one go. Run it before the seed.
 - [ ] `npm run seed:platforms` (must run first — game platform links FK to it)
