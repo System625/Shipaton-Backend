@@ -1,0 +1,77 @@
+// The write path: catalog upserts and the on-miss IGDB lookup.
+// Requires a service-role client — the catalog is read-only to `authenticated`
+// under RLS. Pure mapping lives in ./mapping.ts so the Node seed script can
+// import it without pulling in supabase-js.
+
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import {
+  igdbQuery,
+  searchGamesQuery,
+  type IgdbCredentials,
+  type IgdbGame,
+  type IgdbTimeToBeat,
+} from "./igdb.ts";
+import { fetchTimeToBeats, mapIgdbGame } from "./mapping.ts";
+
+export async function upsertGames(
+  admin: SupabaseClient,
+  games: IgdbGame[],
+  ttbs: Map<number, IgdbTimeToBeat>,
+): Promise<{ id: string; igdb_id: number }[]> {
+  if (games.length === 0) return [];
+
+  const rows = games.map((g) => mapIgdbGame(g, ttbs.get(g.id)));
+  const { data, error } = await admin
+    .from("games")
+    .upsert(rows, { onConflict: "igdb_id" })
+    .select("id, igdb_id");
+  if (error) throw new Error(`games upsert failed: ${error.message}`);
+
+  const written = (data ?? []) as { id: string; igdb_id: number }[];
+  const idByIgdb = new Map(written.map((r) => [r.igdb_id, r.id]));
+
+  const links: { game_id: string; platform_id: number }[] = [];
+  for (const g of games) {
+    const gameId = idByIgdb.get(g.id);
+    if (!gameId) continue;
+    for (const platformId of g.platforms ?? []) {
+      links.push({ game_id: gameId, platform_id: platformId });
+    }
+  }
+
+  if (links.length > 0) {
+    // A platform IGDB knows about but we have not seeded would violate the FK.
+    // Drop those links rather than failing the whole ingest.
+    const { data: known } = await admin.from("platforms").select("id");
+    const knownIds = new Set(((known ?? []) as { id: number }[]).map((p) => p.id));
+    const valid = links.filter((l) => knownIds.has(l.platform_id));
+    if (valid.length > 0) {
+      const { error: linkError } = await admin
+        .from("game_platforms")
+        .upsert(valid, { onConflict: "game_id,platform_id", ignoreDuplicates: true });
+      if (linkError) throw new Error(`game_platforms upsert failed: ${linkError.message}`);
+    }
+  }
+
+  return written;
+}
+
+/** One IGDB search, ingested into the catalog. The on-miss path, not the norm. */
+export async function ingestFromSearch(
+  admin: SupabaseClient,
+  creds: IgdbCredentials,
+  term: string,
+  limit = 20,
+): Promise<number> {
+  const games = await igdbQuery<IgdbGame>(creds, "games", searchGamesQuery(term, limit));
+  // Apicalypse `search` ignores some `where` clauses, so enforce the type rules
+  // here as well as in the query. Without this, DLC and bundles reach the confirm
+  // screen (spec §4).
+  const mainGames = games.filter(
+    (g) => g.game_type === 0 && g.parent_game == null && g.version_parent == null,
+  );
+  if (mainGames.length === 0) return 0;
+
+  const ttbs = await fetchTimeToBeats(creds, mainGames.map((g) => g.id));
+  return (await upsertGames(admin, mainGames, ttbs)).length;
+}

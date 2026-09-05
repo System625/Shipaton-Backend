@@ -1,0 +1,154 @@
+// IGDB v4 client. Runtime-agnostic: no Deno or Node globals, so the same file
+// backs both the edge functions and scripts/seed.ts.
+//
+// IGDB auth is Twitch OAuth. The token response carries `expires_in` (~64 days in
+// IGDB's own example) — read the field, never hardcode a lifetime. Do not request
+// a token per call. Spec section 2.
+
+export type IgdbCredentials = { clientId: string; clientSecret: string };
+
+type CachedToken = { token: string; expiresAt: number };
+
+const tokenCache = new Map<string, CachedToken>();
+
+export async function getAccessToken(creds: IgdbCredentials): Promise<string> {
+  const cached = tokenCache.get(creds.clientId);
+  // 60s of slack so a token cannot expire mid-flight.
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+
+  const url =
+    `https://id.twitch.tv/oauth2/token?client_id=${encodeURIComponent(creds.clientId)}` +
+    `&client_secret=${encodeURIComponent(creds.clientSecret)}&grant_type=client_credentials`;
+
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`Twitch token request failed: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { access_token: string; expires_in: number };
+  tokenCache.set(creds.clientId, {
+    token: body.access_token,
+    expiresAt: Date.now() + body.expires_in * 1000,
+  });
+  return body.access_token;
+}
+
+// IGDB allows 4 requests/second with at most 8 open at once, and 429s on overage.
+// That is a concurrency limit, not a monthly quota (spec section 10).
+const MIN_INTERVAL_MS = 250;
+let nextSlot = 0;
+
+async function throttle(): Promise<void> {
+  const now = Date.now();
+  const slot = Math.max(now, nextSlot);
+  nextSlot = slot + MIN_INTERVAL_MS;
+  if (slot > now) await new Promise((r) => setTimeout(r, slot - now));
+}
+
+/** POST an Apicalypse query. `endpoint` is e.g. "games", "platforms". */
+export async function igdbQuery<T>(
+  creds: IgdbCredentials,
+  endpoint: string,
+  query: string,
+  attempt = 0,
+): Promise<T[]> {
+  await throttle();
+  const token = await getAccessToken(creds);
+  const res = await fetch(`https://api.igdb.com/v4/${endpoint}`, {
+    method: "POST",
+    headers: {
+      "Client-ID": creds.clientId,
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "text/plain",
+      Accept: "application/json",
+    },
+    body: query,
+  });
+
+  if (res.status === 429 && attempt < 5) {
+    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+    return igdbQuery<T>(creds, endpoint, query, attempt + 1);
+  }
+  if (!res.ok) {
+    throw new Error(`IGDB ${endpoint} failed: ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as T[];
+}
+
+// ---- Response shapes, only the fields we ask for ----
+
+export type IgdbGame = {
+  id: number;
+  name: string;
+  slug?: string;
+  first_release_date?: number; // unix SECONDS
+  cover?: { image_id: string };
+  genres?: { name: string }[];
+  platforms?: number[];
+  aggregated_rating?: number; // 0-100, external critic aggregate. NOT Metacritic.
+  game_modes?: { name: string }[];
+  keywords?: { name: string }[];
+  game_type?: number; // 0 = main_game
+  parent_game?: number;
+  version_parent?: number;
+};
+
+export type IgdbTimeToBeat = {
+  id: number;
+  game_id: number;
+  hastily?: number;    // SECONDS
+  normally?: number;   // SECONDS
+  completely?: number; // SECONDS
+  count?: number;
+};
+
+export type IgdbPlatform = {
+  id: number;
+  name: string;
+  slug: string;
+  abbreviation?: string;
+  platform_family?: number;
+};
+
+export const GAME_FIELDS =
+  "fields name, slug, first_release_date, cover.image_id, genres.name, platforms, " +
+  "aggregated_rating, game_modes.name, keywords.name, game_type, parent_game, version_parent;";
+
+/**
+ * Search IGDB. Filters to main games only — without `game_type = 0`, "Elden Ring"
+ * returns the base game, Shadow of the Erdtree, the Deluxe bundle and assorted
+ * packs as separate rows, and they all land on the confirm screen (spec section 4).
+ */
+export function searchGamesQuery(term: string, limit = 20): string {
+  const safe = term.replace(/"/g, '\\"');
+  return `${GAME_FIELDS} search "${safe}"; where game_type = 0; limit ${limit};`;
+}
+
+/**
+ * One page of the catalog seed. Pages by id rather than deep `offset`, which
+ * degrades badly past a few thousand rows. `limit` maxes at 500.
+ */
+export function seedPageQuery(afterId: number, releasedSinceUnix: number, limit = 500): string {
+  return (
+    `${GAME_FIELDS} ` +
+    `where id > ${afterId} & game_type = 0 & parent_game = null & version_parent = null ` +
+    `& first_release_date >= ${releasedSinceUnix}; ` +
+    `sort id asc; limit ${limit};`
+  );
+}
+
+export function timeToBeatQuery(gameIds: number[]): string {
+  return (
+    "fields game_id, hastily, normally, completely, count; " +
+    `where game_id = (${gameIds.join(",")}); limit 500;`
+  );
+}
+
+/**
+ * Cover URLs are built by hand from image_id. The URL IGDB returns is `t_thumb`
+ * and is too small to use. `t_cover_big` is 264x374; `_2x` gives 528x748, which is
+ * what a phone needs. An invalid size token 404s rather than falling back.
+ */
+export function coverUrl(imageId: string | undefined): string | null {
+  if (!imageId) return null;
+  return `https://images.igdb.com/igdb/image/upload/t_cover_big_2x/${imageId}.jpg`;
+}

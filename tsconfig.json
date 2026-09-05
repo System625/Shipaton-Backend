@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  // Edge functions run on Deno and are typechecked by `supabase functions serve`,
+  // not by this config. Only the shared modules the Node scripts import are listed.
+  "include": [
+    "scripts/**/*.ts",
+    "supabase/functions/_shared/igdb.ts",
+    "supabase/functions/_shared/session-fit.ts",
+    "supabase/functions/_shared/catalog-game.ts",
+    "supabase/functions/_shared/oembed.ts"
+  ]
+}

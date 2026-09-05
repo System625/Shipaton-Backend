@@ -1,0 +1,17 @@
+# Minimal config. `supabase link --project-ref <ref>` fills in the rest, and
+# `supabase init` will offer to expand this if you want the full local stack.
+project_id = "shelf-backend"
+
+[db]
+major_version = 15
+
+[functions.search]
+verify_jwt = true
+[functions.games]
+verify_jwt = true
+[functions.share-resolve]
+verify_jwt = true
+[functions.share-confirm]
+verify_jwt = true
+[functions.roulette]
+verify_jwt = true
