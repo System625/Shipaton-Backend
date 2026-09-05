@@ -55,6 +55,13 @@ Twitch rejects those explicitly.
 **Nothing else is blocked on this.** Only the seed needs IGDB. The migrations,
 the schema check and the whole Supabase half can go ahead now.
 
+**Ask Josh for the Apple credentials in the same message.** Social sign-in is now
+decided (see Open decisions), which drags in Sign in with Apple, which needs Apple
+Developer Program membership plus a Services ID, Team ID, Key ID and a `.p8` private
+key. Store accounts are Josh's — so this is the *same* dependency shape as Twitch,
+and asking for it now rather than after the seed avoids waiting on him twice in
+sequence. With the deadline on 30 Sep, serialized waits are the expensive kind.
+
 ---
 
 ## What is built
@@ -388,26 +395,39 @@ These are the ones that cost time if you hit them without warning.
   without headroom. **That estimate is arithmetic and has never been measured** —
   take the real number after the seed and decide on it. Budget $25/month for October
   if it is close.
-- **Auth method.** Nothing in the spec settles it, but the options are not
-  symmetric. Apple's App Store guideline 4.8 requires Sign in with Apple only if the
-  app offers a **third-party** sign-in — email magic link is not third-party, so
-  magic-link-only sidesteps building Apple sign-in entirely, while adding Google
-  commits you to building Apple too. Magic link also needs a deep link back into the
-  app, which costs Expo Go — but that is **already sunk**, because Expo Go was dropped
-  for `expo-share-intent`. So the expensive part of magic link is paid for.
-  **Recommendation: magic link**, unless Josh wants social sign-in for demo polish.
-  It is the least setup and the only option that does not drag a second provider along
-  with it before 30 Sep.
+- **Auth method — DECIDED 5 Sep: social sign-in.** What is still open is *which*
+  providers and who supplies the credentials.
 
-  **Note where auth actually lives.** This backend implements none of it: there is no
-  login endpoint to write, because `_shared/http.ts` builds a client from the caller's
-  JWT and lets RLS apply — Supabase Auth *is* the auth server. The sign-in flow,
-  session storage, token refresh and deep-link handling all belong in Sola's repo.
-  What belongs here is project configuration (providers, redirect URLs, email
-  template) and one verification: **re-check RLS with a real signed JWT.** The check
-  recorded in step 3 simulated the session with `set_config('request.jwt.claims', …)`,
-  which exercises the policies correctly but not the real token path — issuer, expiry,
-  and the `sub` claim landing where `auth.uid()` reads it.
+  **Apple guideline 4.8 does not say what it is usually quoted as saying.** It never
+  names Sign in with Apple. Verbatim: an app using a third-party or social login
+  "must also offer as an equivalent option another login service" that (a) limits
+  data collection to name and email, (b) "allows users to keep their email address
+  private as part of setting up their account", and (c) does not collect in-app
+  interactions for advertising without consent.
+
+  Magic link clears (a) and (c) trivially. **It is (b) that it probably fails** — the
+  user hands over their real address and nothing relays or hides it. Sign in with
+  Apple is built to satisfy all three. So the safe reading is that shipping Google
+  sign-in on iOS obliges Sign in with Apple too; whether a magic link alone would
+  pass (b) is arguable and not worth gambling a review on before 30 Sep.
+
+  **Worth confirming before doing any of the Apple work:** 4.8 is an *App Store
+  review* rule. If nothing goes through App Store review inside the contest window —
+  judging runs to 22 Oct, and distribution may be TestFlight or an Android build —
+  then 4.8 does not bite yet, and Apple sign-in could be deferred past the deadline.
+  Ask Josh what the iOS distribution path actually is; the answer decides whether
+  this is urgent or not.
+
+  What each provider needs, so the ask to Josh is complete:
+
+  | Provider | Needed | Whose account |
+  |---|---|---|
+  | Google | OAuth client IDs (Web for Supabase, plus iOS/Android for native) | Google Cloud project — Josh's? |
+  | Apple | Membership, Services ID, Team ID, Key ID, `.p8` key | Josh's, per "store accounts are Josh's" |
+
+  Deep-link redirect URLs are needed either way, and the Expo cost is already sunk
+  since Expo Go went for `expo-share-intent`.
+
 - **`CoverColorKey`** in `_shared/catalog-game.ts` is a placeholder set of seven
   names. Confirm the real union against Sola's app and replace it, or the coloured
   swatch fallback renders wrong.
