@@ -12,6 +12,201 @@ Your structure made this easy to pick up. `searchCatalog` and `findCatalogGame` 
 
 ---
 
+# Update, 7 September: it is live
+
+The backend is deployed and working against real data. Everything below this line was
+written on 4 September as a heads up; this part is the actual handoff. Where the two
+disagree, this part wins.
+
+The catalog holds **89,117 games**, with alternative titles so `botw`, `gta v` and
+`bg3` resolve. Two endpoints are live and verified end to end against a real signed
+token.
+
+**Base URL:** `https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1`
+
+- `GET /search?q=elden ring` → `CatalogGame[]`, at most 10
+- `GET /games/<uuid>` → `CatalogGame`
+
+Both require a logged-in user. Without a token they return 401, so the URL on its own
+will not get you anything — the session has to come first. That is the main piece of
+work on your side and I go through it below.
+
+## 1. What the app needs before it can call anything
+
+There is no Supabase wiring in the app repo at all right now — no `@supabase/supabase-js`
+in `package.json`, no reference to it in `src/`, and `src/config/env.ts` only carries the
+RevenueCat keys. So:
+
+```sh
+npx expo install @supabase/supabase-js @react-native-async-storage/async-storage
+```
+
+AsyncStorage you already have. The client wants it for session persistence:
+
+```ts
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    storage: AsyncStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,   // required on React Native
+  },
+});
+```
+
+Then `searchCatalog` becomes:
+
+```ts
+export async function searchCatalog(query: string): Promise<CatalogGame[]> {
+  const { data, error } = await supabase.functions.invoke(`search?q=${encodeURIComponent(query)}`, {
+    method: 'GET',
+  });
+  if (error) throw error;
+  return data;
+}
+```
+
+`functions.invoke` attaches the current session's token for you. If you'd rather use
+`fetch` directly, you need both an `apikey` header and `Authorization: Bearer <token>`.
+
+I will send you the URL and the anon key separately rather than put the key in a doc
+that gets forwarded. The anon key is safe to ship in the bundle — it is meant to be
+public and RLS is what actually protects the data — but I would still rather hand it
+over directly.
+
+## 2. You are not blocked on Josh for this
+
+Google and Apple sign-in need accounts that are Josh's, and that is still outstanding.
+But **email and password sign-in is enabled on the project today**, so you can build
+and test the whole session flow now:
+
+```ts
+await supabase.auth.signInWithPassword({ email, password });
+```
+
+Switching to Google or Apple later changes who mints the identity. It does not change
+the shape of the token, how the endpoints read it, or any of the code above. So the
+plumbing you write against email/password is the plumbing that ships. Please do not
+wait on the providers to start this.
+
+## 3. What actually comes back
+
+This is a real response from the deployed endpoint, not a sketch:
+
+```json
+{
+  "id": "fc9cd9c2-aa68-42c0-9226-33cf6c4bcdef",
+  "title": "Elden Ring",
+  "slug": "elden-ring",
+  "platforms": [
+    { "id": 508, "name": "Nintendo Switch 2",      "slug": "switch-2"   },
+    { "id": 6,   "name": "PC (Microsoft Windows)", "slug": "win"        },
+    { "id": 48,  "name": "PlayStation 4",          "slug": "ps4--1"     },
+    { "id": 167, "name": "PlayStation 5",          "slug": "ps5"        },
+    { "id": 49,  "name": "Xbox One",               "slug": "xboxone"    },
+    { "id": 169, "name": "Xbox Series X|S",        "slug": "series-x-s" }
+  ],
+  "releaseDate": "2022-02-25",
+  "genres": ["Role-playing (RPG)", "Adventure"],
+  "coverImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co4jni.jpg",
+  "timeToBeatHours": 119.4,
+  "sessionFit": "low",
+  "criticScore": 97,
+  "abbreviation": "ER",
+  "colorKey": "red"
+}
+```
+
+Six platforms, which is the thing `platform: string` could never hold.
+
+`slug` is new since the 4 September draft — stable and readable, so share links can use
+it instead of the uuid. `id` is still the thing to key on.
+
+Fields that can be absent: `releaseDate`, `coverImageUrl`, `timeToBeatHours`,
+`sessionFit`, `criticScore`, `slug`. Only about 5% of games have a time to beat, so
+treat that as usually missing rather than usually present.
+
+## 4. Where your type and mine differ, and who wins
+
+I went through the app repo properly this time rather than guessing. The rule I used:
+**I own anything derived from IGDB data, you own anything that is a design decision.**
+
+| Field | Winner | Note |
+| --- | --- | --- |
+| `platforms[]` vs `platform` | mine | Six platforms on Elden Ring. Pick one for the row subtitle, or let people choose which they own. |
+| `genres[]` vs `genre` | mine | `genres[0]` if you just need one. |
+| `releaseDate` vs `year` | mine | `year` is required in your type but plenty of games have no date at all. Derive it: `new Date(releaseDate).getFullYear()`. |
+| `id` uuid vs `'elden-ring'` | mine | Has to match the database key, see below. |
+| `abbreviation` | mine | Can't hand-type 89,117 of them. |
+| **`colorKey`** | **yours** | Mine was a placeholder I invented. Yours are real design values, so I took yours. |
+| `pcRequirements` | neither | Still does not exist in IGDB. |
+
+**On `colorKey`, I owe you a heads up.** I was emitting `amber, rose, violet, indigo,
+teal, emerald, slate`. Your `coverColors` in `theme.ts` knows `teal, orange, purple,
+pink, gold, navy, red, green, blue, slate`. Only two of them overlapped. `GameCover.tsx`
+resolves an unknown key as `coverColors[colorKey] ?? coverColors.slate`, so five of my
+seven keys would have come through as the same grey, with no error anywhere to tell
+either of us. Fixed — I emit your ten now, and my verification pins every emitted key to
+that declared list, so it cannot drift silently on my side. It cannot see your
+`theme.ts`, though, so if you rename or drop a colour there, tell me and I will change
+mine to match. Worth knowing because it is exactly the kind of bug that survives to
+demo day.
+
+**Answering my own open question 1 from 4 September:** I checked, and yes,
+`pcRequirements` is being used — `GameDetailScreen.tsx` renders a minimum/recommended
+block from it. IGDB has no such data, so that section needs to come out or find another
+source. Sorry, that one is on me for putting it in the mock shape originally.
+
+## 5. Three things that are your call
+
+**`id` changes from slug to uuid, and that touches stored data.** Your library and
+wishlist stores persist `catalogId` into AsyncStorage, and those are currently strings
+like `'elden-ring'`. They have to become uuids, because `library_entries.game_id` points
+at the real games table. Simplest is to clear local state once during the switch, since
+this is all dev data. If you would rather migrate it, I can give you a slug → uuid
+lookup. Your mock ids look like IGDB slugs and many will match outright, but not all —
+IGDB has `hades-ii` where yours says `hades-2` — so that migration would need a
+by-hand pass over the stragglers. Clearing local state is genuinely the cheaper option.
+
+**`releaseDate` means something different now.** In your catalog its presence means "not
+out yet", and `useWishlistStore` uses it to decide whether to schedule a reminder. I send
+it for every game that has a date, past or future. Nothing breaks today —
+`scheduleReleaseReminder` already no-ops on a past date, which is good defensive code —
+but I would swap the flag for `releaseDate > today` so it says what it means.
+
+**The abbreviations get longer.** Mine takes up to three initials, so *Return of the Obra
+Dinn* is `ROD` where yours was `RO`, and *Hollow Knight: Silksong* is `HKS`. In a 48px
+swatch three characters may be tight. Say the word and I will cap it at two.
+
+## 6. What I still need from you
+
+For the Google and Apple sign-in setup, none of which is written down anywhere:
+
+- iOS bundle identifier
+- Android package name
+- Android signing SHA-1 fingerprint (Google cannot create the Android OAuth client without it)
+- the deep link scheme you want
+
+**And one product decision, worth settling before you build the sign-in screen.**
+Supabase only links a second sign-in method to an existing account when the email
+matches. Apple's Hide My Email hands out a `@privaterelay.appleid.com` address, which
+will never match someone's Google address. So one person signing in with Google on
+Android and Apple on iOS gets two separate accounts, and their whole library looks like
+it vanished — no error, nothing to debug from the app side. App Store guideline 4.8
+requires us to offer the email-privacy option, so this is the path Apple actively pushes
+people down. Cheapest fix is one provider per platform: Apple on iOS, Google on Android.
+That is a UI decision more than a backend one, which is why it is yours.
+
+## 7. If you want to see it working
+
+Everything above is verified — `npm run verify:functions` on my side runs 29 checks
+against the deployed URLs, including auth rejection, response shape and a real search.
+`elden ring` comes back first. Search ranking is not perfect yet on shorter queries
+(`cyberpunk` currently puts some shovelware above Cyberpunk 2077) and I have a fix
+planned; it does not change the contract, so it should not hold you up.
+
+---
+
 ## What is changing under you
 
 ### 1. Game data comes from a server we own, not from the app
