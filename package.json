@@ -15,7 +15,8 @@
     "functions:serve": "supabase functions serve --env-file .env",
     "functions:deploy": "supabase functions deploy",
     "typecheck": "tsc --noEmit",
-    "verify:auth": "tsx scripts/verify-auth-rls.ts"
+    "verify:auth": "tsx scripts/verify-auth-rls.ts",
+    "verify:functions": "tsx scripts/verify-functions.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

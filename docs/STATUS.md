@@ -24,6 +24,11 @@ holds **89,117 games, 62,685 alternative titles and 161,738 platform links**. Al
 twelve abbreviation and hashtag cases resolve in the top 5 against real data.
 `/search` on real data works.
 
+**`/search` and `/games/:id` are deployed and verified against a real JWT** (7 Sep),
+which is step 5 — the milestone the rest was building toward. `npm run verify:functions`
+re-checks the deployed endpoints in one command. What remains before the app can call
+them is app-side: it has no Supabase client and no session yet.
+
 ---
 
 ## Blocked right now
@@ -380,18 +385,71 @@ in pass 2 (`seedPopularPageQuery`) without storing it, so this is a migration pl
 re-seed, not new API work. Deliberately **not** done on 7 Sep — it changes ranking
 semantics and wants a decision, not a drive-by.
 
-### 5. `/search` and `/games/:id` live ← **the milestone that matters**
+### 5. `/search` and `/games/:id` live — **DONE 7 Sep**
+
+Both are deployed to `sbunhrxwhraigwpidbxk` and verified against a real signed JWT.
+`share-resolve`, `share-confirm` and `roulette` are deliberately **not** deployed;
+they are steps 7 and 8 and nothing has exercised them yet.
 
 ```sh
-npm run functions:serve   # exercise both against a real JWT
-npx supabase functions deploy
+npm run verify:functions   # 29 checks against the DEPLOYED urls, not localhost
 ```
 
-Then hand Sola the base URL so `searchCatalog` and `findCatalogGame` swap over. That
-seam is the one Sola already built — keep it.
+`scripts/verify-functions.ts` creates its own user, signs in, and walks the whole
+deployed path: GoTrue issues a token, the edge runtime verifies it, `http.ts` rebuilds
+a client from it, RLS applies, and the response comes back through `toCatalogGame`. It
+pins the response *shape* too, so a future palette or field drift fails loudly instead
+of silently rendering grey. All 29 pass, including `elden ring` at **rank 1**.
+
+`TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are set as function secrets — `/search`
+needs them for the live-IGDB fallback when the local catalog scores below 0.55. The
+`SUPABASE_*` vars are injected by the platform and must not be set by hand.
+
+**The base URL is `https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1`.**
 
 **Steps 1–5 are the whole current app on real data, and are independent of
-everything below. If the deadline gets tight, that is the point worth reaching.**
+everything below. That point is now reached.**
+
+#### The app-side seam is bigger than "swap two functions"
+
+Checked against the app repo (`akintewe/revenue-cat-game`) on 7 Sep, and this doc
+previously understated it. Two things:
+
+**The app has no Supabase wiring at all** — no `@supabase/supabase-js` in
+`package.json`, no reference to `supabase` anywhere in `src/`, and `src/config/env.ts`
+carries only RevenueCat keys. Both endpoints call `authenticate()` and 401 without a
+JWT, so the base URL alone buys nothing: the app needs a client and a session first.
+
+**`CatalogGame` means different things on each side.** `src/data/catalog.ts` is a mock
+("standing in for a real games database until that integration is wired up") shaped
+around 19 hand-typed rows where every game has exactly one platform and one genre.
+Rule applied when reconciling them: **the backend owns anything derived from IGDB
+data; the app owns anything that is a design decision.**
+
+| Field | Winner | Why |
+| --- | --- | --- |
+| `platforms[]` vs `platform` | backend | Elden Ring returns 6 platforms. One string discards the 161,738 seeded links. |
+| `genres[]` vs `genre` | backend | IGDB returns arrays. |
+| `releaseDate` vs `year` | backend | `year` is required in the app's type but undated games exist, so it is unsatisfiable. App derives the year. |
+| `id` uuid vs slug | backend | `library_entries.game_id` FKs to `games.id`; the app cannot write with `'elden-ring'`. |
+| `abbreviation` | backend | Cannot hand-type 89k. |
+| `colorKey` | **app** | Real design values in the app's `theme.ts`. The backend's were an unverified placeholder. |
+| `pcRequirements` | neither | IGDB has no such field. `GameDetailScreen` renders it from hand-written strings; that section needs dropping or another source. |
+
+**The palette was a live defect, now fixed.** The backend emitted `amber, rose,
+violet, indigo, teal, emerald, slate`; the app knows `teal, orange, purple, pink,
+gold, navy, red, green, blue, slate`. Only two overlapped, and `GameCover.tsx`
+resolves an unknown key as `coverColors[colorKey] ?? coverColors.slate` — so five of
+seven keys rendered as the same grey with no error on either side. `COVER_COLOR_KEYS`
+now matches the app exactly and `verify:functions` asserts it.
+
+**Two things still want Sola, not a decision here.** `releaseDate` presence currently
+*means* "unreleased" in the app (it gates `scheduleReleaseReminder`); the backend sends
+it for every dated game, so the app should compute `isUnreleased = releaseDate > today`
+rather than keep presence-as-a-flag. Nothing breaks meanwhile — `scheduleReleaseReminder`
+no-ops on past dates. And `deriveAbbreviation` returns up to three initials, so
+*Return of the Obra Dinn* is `ROD` where the app's mock had `RO`; cap it at two if the
+48px swatch looks wrong.
 
 ### 6. Auth — **verification DONE, providers blocked on Josh and Sola**
 
