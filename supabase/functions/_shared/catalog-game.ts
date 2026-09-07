@@ -4,16 +4,24 @@
 
 export type PlatformRef = { id: number; name: string; slug: string };
 
-// NOTE: these keys must match Sola's `CoverColorKey` union in the app. They are a
-// placeholder until that union is confirmed against the app repo — see docs/STATUS.md.
+// These keys must match the app's `CoverColorKey` union exactly. Confirmed against the
+// app repo 7 Sep 2026 — declared in `src/data/catalog.ts`, resolved to hex in
+// `src/shared/theme/theme.ts`. The previous placeholder set (amber, rose, violet,
+// indigo, emerald) shared only `teal` and `slate` with the app, and `GameCover.tsx`
+// resolves an unknown key as `coverColors[colorKey] ?? coverColors.slate` — so five of
+// the seven keys rendered as the same grey, silently, with no error on either side.
+// Do not add a key here without adding its colour to the app's theme.ts.
 export const COVER_COLOR_KEYS = [
-  "amber", "rose", "violet", "indigo", "teal", "emerald", "slate",
+  "teal", "orange", "purple", "pink", "gold",
+  "navy", "red", "green", "blue", "slate",
 ] as const;
 export type CoverColorKey = (typeof COVER_COLOR_KEYS)[number];
 
 export type CatalogGame = {
   id: string;
   title: string;
+  /** IGDB's slug. Stable and human-readable, so share links can use it instead of the uuid. */
+  slug?: string;
   platforms: PlatformRef[];
   releaseDate?: string;
   genres: string[];
@@ -73,6 +81,7 @@ export function toCatalogGame(row: CatalogRow): CatalogGame {
   return {
     id: row.id,
     title: row.title,
+    slug: row.slug ?? undefined,
     platforms: row.platforms ?? [],
     releaseDate: row.release_date ?? undefined,
     genres: row.genres ?? [],
