@@ -130,21 +130,73 @@ export const GAME_FIELDS =
  * Search IGDB. Filters to main games only — without `game_type = 0`, "Elden Ring"
  * returns the base game, Shadow of the Erdtree, the Deluxe bundle and assorted
  * packs as separate rows, and they all land on the confirm screen (spec section 4).
+ *
+ * `game_type = 0` is not enough on its own: **editions carry game_type 0 too**, and
+ * are distinguished only by `version_parent`. Measured 7 Sep against the live API,
+ * `search "elden ring"; where game_type = 0; limit 10` returned 6 editions in 10
+ * rows (Collector's, Deluxe, Launch, Seeker's, two Nightreign) — so more than half
+ * the limit was spent on rows the caller then discarded. Same query with all three
+ * clauses returns 5 rows, 0 editions. Matches `seedPageQuery`, which always had
+ * them.
  */
 export function searchGamesQuery(term: string, limit = 20): string {
   const safe = term.replace(/"/g, '\\"');
-  return `${GAME_FIELDS} search "${safe}"; where game_type = 0; limit ${limit};`;
+  return (
+    `${GAME_FIELDS} search "${safe}"; ` +
+    `where game_type = 0 & parent_game = null & version_parent = null; ` +
+    `limit ${limit};`
+  );
 }
 
+// Every seed page carries the same three type clauses. Editions are game_type 0 and
+// are caught only by `version_parent` — see searchGamesQuery above.
+const SEED_TYPE_CLAUSES =
+  "game_type = 0 & parent_game = null & version_parent = null";
+
 /**
- * One page of the catalog seed. Pages by id rather than deep `offset`, which
- * degrades badly past a few thousand rows. `limit` maxes at 500.
+ * One page of the recent-releases pass. Pages by id rather than deep `offset`,
+ * which degrades badly past a few thousand rows. `limit` maxes at 500.
  */
 export function seedPageQuery(afterId: number, releasedSinceUnix: number, limit = 500): string {
   return (
     `${GAME_FIELDS} ` +
-    `where id > ${afterId} & game_type = 0 & parent_game = null & version_parent = null ` +
+    `where id > ${afterId} & ${SEED_TYPE_CLAUSES} ` +
     `& first_release_date >= ${releasedSinceUnix}; ` +
+    `sort id asc; limit ${limit};`
+  );
+}
+
+/**
+ * One page of the back-catalogue pass — spec §2's "plus anything popular enough to
+ * matter", which was specced and configured (`SEED_MIN_POPULARITY`) but never
+ * implemented until 7 Sep.
+ *
+ * Shelf is a backlog app, so the pile skews *old*: measured against the live API,
+ * a 2023-onwards seed contains none of Elden Ring (Feb 2022), The Witcher 3, GTA V,
+ * Cyberpunk 2077, Breath of the Wild, RDR2, Hollow Knight or Stardew Valley — every
+ * worked example in the spec, and every abbreviation case in STATUS §3b but `bg3`.
+ *
+ * `total_rating_count` is IGDB's count of user ratings, filtered on but not stored:
+ * it decides what enters the catalog, nothing downstream reads it. Thresholds
+ * measured 7 Sep, rows added on top of the window's 75,559:
+ * >=5 -> 13,558   >=20 -> 5,439   >=50 -> 2,694   >=100 -> 1,568.
+ *
+ * The date ranges are deliberately disjoint (`<` here, `>=` above), so the two
+ * passes cannot return the same row and the upserts cannot fight. Games with no
+ * release date at all are in neither pass, which is intended — an undated row has
+ * nothing for the finish card or roulette to work with.
+ */
+export function seedPopularPageQuery(
+  afterId: number,
+  releasedBeforeUnix: number,
+  minRatingCount: number,
+  limit = 500,
+): string {
+  return (
+    `${GAME_FIELDS} ` +
+    `where id > ${afterId} & ${SEED_TYPE_CLAUSES} ` +
+    `& first_release_date < ${releasedBeforeUnix} ` +
+    `& total_rating_count >= ${minRatingCount}; ` +
     `sort id asc; limit ${limit};`
   );
 }

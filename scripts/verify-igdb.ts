@@ -8,7 +8,7 @@
 //   3. the game_type filter is doing its job
 //   4. game_time_to_beats returns seconds, which is what the mapping divides by
 
-import { igdbQuery, GAME_FIELDS, type IgdbGame, type IgdbTimeToBeat } from
+import { igdbQuery, searchGamesQuery, type IgdbGame, type IgdbTimeToBeat } from
   "../supabase/functions/_shared/igdb.ts";
 import { mapIgdbGame } from "../supabase/functions/_shared/mapping.ts";
 import { igdbCreds } from "./env.ts";
@@ -17,11 +17,9 @@ const creds = igdbCreds();
 console.log(`client id ${creds.clientId.slice(0, 6)}… (secret ${creds.clientSecret.length} chars)\n`);
 
 // 1 + 2: a token is fetched lazily by the first query, so this covers both.
-const games = await igdbQuery<IgdbGame>(
-  creds,
-  "games",
-  `${GAME_FIELDS} search "elden ring"; where game_type = 0; limit 5;`,
-);
+// Uses the real query builder, not a copy of it — a check that tests a hand-written
+// query proves nothing about what the edge functions actually send.
+const games = await igdbQuery<IgdbGame>(creds, "games", searchGamesQuery("elden ring", 5));
 console.log(`authenticated. "elden ring" -> ${games.length} main games:`);
 for (const g of games) {
   console.log(`  ${String(g.id).padEnd(8)} ${g.name}`);

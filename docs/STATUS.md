@@ -1,6 +1,6 @@
 # Shelf backend — where things stand
 
-**Last updated 5 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 7 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
 
 This is the pickup doc. Read it, then `docs/spec.md` for any *why* it doesn't
@@ -17,16 +17,25 @@ worked example exactly, search and roulette were exercised against seeded rows, 
 RLS was confirmed to isolate two real accounts — read *and* write. The catalog is
 deliberately empty again: the rows used to prove it were removed afterwards.
 
-What remains is IGDB. No IGDB call has been made with real credentials, and Twitch
-is still **blocked** (see below), so the seed is the only thing standing between
-here and a working `/search` on real data. `SUPABASE_SERVICE_ROLE_KEY` still needs
-pasting from the dashboard before the seed can write.
+**The Twitch blocker is gone and the catalog is seeded.** 7 Sep: a Twitch account
+created abroad (Nigerian numbers are still rejected by Twitch's 2FA — the workaround
+was the account, not the phone) produced real IGDB credentials, and the catalog now
+holds **89,117 games, 62,685 alternative titles and 161,738 platform links**. All
+twelve abbreviation and hashtag cases resolve in the top 5 against real data.
+`/search` on real data works.
 
 ---
 
 ## Blocked right now
 
-**Twitch will not accept the phone number, so there are no IGDB credentials.**
+**Nothing on IGDB. The remaining blocker is auth provider enablement** — Apple
+Developer Program membership and a Google Cloud project, both Josh's, per
+`docs/auth-setup.md`. Unchanged by any of the 7 Sep work.
+
+<details>
+<summary>Resolved 7 Sep — the Twitch 2FA blocker, kept for the record</summary>
+
+**Twitch would not accept the phone number, so there were no IGDB credentials.**
 
 IGDB authenticates through Twitch OAuth, and Twitch will not let you register an
 application without 2FA enabled. Enabling 2FA rejects Tunde's Nigerian mobile with
@@ -52,8 +61,19 @@ flow at `twitch.tv/settings/security` (a different endpoint from the 2FA modal);
 waiting out a possible rate limit; a different Nigerian carrier. Not a VoIP number —
 Twitch rejects those explicitly.
 
-**Nothing else is blocked on this.** Only the seed needs IGDB. The migrations,
-the schema check and the whole Supabase half can go ahead now.
+**Resolution.** Neither the alternate contact flow nor a different carrier worked.
+Tunde's brother, who is abroad, created the account; it registered the app
+`Prysm Blast Catalog` (Confidential client, `http://localhost` redirect) and the
+credentials went straight into `.env`. Josh never had to do it.
+
+**One consequence to track.** STATUS previously planned for *Josh* to register this
+app, because IGDB ties an approved commercial partnership to a client id and Josh
+sent the partnership email. The partnership request and the client id now trace to
+different people. IGDB only ever sees the client id so nothing breaks, but if IGDB
+replies, Josh needs to know which client id to name — and per the Twitch agreement,
+if that developer account is ever closed, the stored catalog goes with it.
+
+</details>
 
 **Ask Josh for the auth credentials in the same message.** Social sign-in is now
 decided (see Open decisions), which needs an Apple Developer Program membership and a
@@ -286,38 +306,79 @@ function is SECURITY INVOKER, so a missing policy on `game_alt_titles` would hav
 made abbreviation search fail silently for real users while passing every test run
 as `postgres`.
 
-### 4. Seed the catalog — needs IGDB credentials
+### 4. Seed the catalog — **DONE 7 Sep**
 
 ```sh
 npm run verify:igdb      # do this first; fails in 2s instead of mid-seed
 npm run seed:platforms   # must precede games
-npm run seed:games
+npm run seed:games       # two passes, each independently resumable
 ```
 
-Then spot-check that DLC, bundles and editions did *not* come through, and record
-the real database size — see the free-vs-Pro decision below.
+**Result: 89,117 games, 62,685 alternative titles, 161,738 platform links, 98 MB.**
+220 platforms. Zero warnings, zero rows with `igdb_game_type <> 0` — the edition and
+DLC filtering held across 89k real rows.
 
-**Also measure alternative-title coverage, which is currently a guess.** The seed
-prints a running `alt titles:` count, but the number that matters is how many games
-got a *usable* one:
+**The seed grew a second pass, because the first one was building the wrong
+catalog.** Spec §2 says "everything from the last 3 years, **plus anything popular
+enough to matter**". Only the date arm was ever implemented; `SEED_MIN_POPULARITY`
+sat in `.env` read by nothing. A date-only seed contains **none** of Elden Ring (Feb
+2022, misses by ten months), The Witcher 3, GTA V, Cyberpunk 2077, BotW, RDR2,
+Hollow Knight or Stardew Valley — every worked example in this doc and the spec.
+That is the wrong half of the library for an app about the backlog you already own:
+a backlog is accumulated, so it skews old. `seedPopularPageQuery` adds pre-2023
+games with `total_rating_count >= 5` — 13,558 rows, +18%, under a minute.
 
-```sql
--- what fraction of the catalog has any alternative title at all
-select count(*) filter (where a.game_id is not null)::float / count(*) as coverage
-  from games g left join (select distinct game_id from game_alt_titles) a
-    on a.game_id = g.id;
+**Alternative-title coverage — the open question from §3b, now measured.**
 
--- do the abbreviations people actually type resolve?
-select shelf_search_games('bg3', 1);
-select shelf_search_games('gta v', 1);
-select shelf_search_games('botw', 1);
-```
+| | |
+|---|---|
+| games with at least one alt title | **49,175 / 89,117 = 55.2%** |
+| abbreviation cases resolving in top 5 | **12 / 12** (8 at rank 1) |
 
-If coverage is thin, `game_alt_titles` is helping less than the numbers in step 3b
-suggest — those were measured against hand-written rows, not IGDB output. The
-fallback if IGDB's acronym data is poor is a small hand-curated alias list for the
-50 or so games most likely to be searched by abbreviation; the table and the search
-path already exist, so that would be a data problem, not a code change.
+`bg3`, `gta v`, `gta5`, `botw`, `rdr2`, `eldenring`, `nomanssky`, `garrysmod`,
+`witcher 3` all rank first. IGDB's acronym data is good. **The hand-curated alias
+fallback this section used to propose is not needed** — don't build it.
+
+**Time-to-beat coverage is 5.1%** (4,523 of 89,117) and that is not a seed defect:
+only 7,534 entries in all of IGDB carry a `normally` value, so we hold ~60% of every
+time-to-beat that exists. `deriveSessionFit` falls back to genres and keywords, so
+roulette works without it — but do not treat `ttb_*_hours` as reliably present.
+
+**A corrupt row killed the first run**, and the fix is worth knowing about. "Where
+Winds Meet" reports 25,107 hours to beat normally off 7 submissions; `ttb_*_hours`
+is `numeric(5,1)`, so anything >= 10000 fails the insert and takes the whole 500-row
+page with it. `mapping.ts` now nulls anything above `TTB_MAX_PLAUSIBLE_HOURS`
+(1000h). Null, not a wider column: a 25,107h reading would make roulette rank a game
+as fitting no session ever, on one bad submission, while null is a state the
+pipeline already handles for the 95% of games with no entry at all.
+
+The 1000h line is a judgement call and the data supports it. Immediately below it
+sit endless live-service games with real submissions — Minecraft 955h, Fallout 76
+877h, Warframe 847h, and round 1000h entries for Mobile Legends and Crossy Road.
+Above it, corruption. Tune the constant in `mapping.ts`; nothing else reads it.
+
+> **If you re-seed, re-run both passes from zero rather than resuming.** The first
+> run wrote 4,500 rows before the crash and the resume never revisited them, which
+> left 6 rows the fixed mapping would never produce. Resume is for interruptions,
+> not for code changes.
+
+### 4b. Search ranking has no popularity signal — **OPEN, decide before demo**
+
+Measured against the seeded catalog, `cyberpunk` returns **Cyberpunk SFX** and
+**Cyberpunk Sex** above **Cyberpunk 2077**. `zelda botw` lands 4th, `dragonsdogma2`
+sits behind `Dragon's Dogma`. Nothing is unfindable — all 12 test cases are in the
+top 5 — but the most-wanted result is not always first, on the app's primary path.
+
+Cause: `shelf_search_games` ranks on trigram similarity alone, and similarity favours
+**short** titles. A three-word shovelware title beats a famous game whose name is
+longer than the query. No amount of alt-title work fixes this; it is a ranking
+problem, not a matching one.
+
+Fix, when someone picks it up: store IGDB's `total_rating_count` and use it as a
+tie-break among rows of comparable similarity. The seed already filters on the field
+in pass 2 (`seedPopularPageQuery`) without storing it, so this is a migration plus a
+re-seed, not new API work. Deliberately **not** done on 7 Sep — it changes ranking
+semantics and wants a decision, not a drive-by.
 
 ### 5. `/search` and `/games/:id` live ← **the milestone that matters**
 

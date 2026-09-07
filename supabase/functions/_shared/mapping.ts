@@ -37,8 +37,30 @@ export type GameUpsert = {
 };
 
 // IGDB returns time to beat in SECONDS.
-const secondsToHours = (s: number | undefined): number | null =>
-  s == null ? null : Math.round((s / 3600) * 10) / 10;
+//
+// Above this, treat the value as absent rather than real. IGDB's time-to-beat rows
+// are user submissions and a few are plainly corrupt — "Where Winds Meet" reports
+// 25,107 hours (2.9 years) to beat normally, off 7 submissions. Measured 7 Sep
+// across the 7,534 entries that carry a `normally`: 110 exceed 200h, 49 exceed
+// 1000h, 16 exceed 9999.9h.
+//
+// Two reasons null beats storing the number. `ttb_*_hours` is numeric(5,1), so
+// anything >= 10000 fails the insert outright and takes the whole 500-row page with
+// it (this is what broke the first seed run). And a garbage value is worse than no
+// value downstream: deriveSessionFit and shelf_roulette both already handle a null
+// time-to-beat — most games have no entry at all — but a 25,107h reading would rank
+// a game as fitting no session ever, on one bad submission.
+//
+// 1000h is a judgement call, not a measured boundary. It sits well above the
+// longest genuinely long games (completionist JRPGs land near 200h) and well below
+// the corrupt cluster. Tune it here; nothing else reads it.
+const TTB_MAX_PLAUSIBLE_HOURS = 1000;
+
+const secondsToHours = (s: number | undefined): number | null => {
+  if (s == null) return null;
+  const hours = Math.round((s / 3600) * 10) / 10;
+  return hours > TTB_MAX_PLAUSIBLE_HOURS ? null : hours;
+};
 
 export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): GameUpsert {
   const ttbNormally = secondsToHours(ttb?.normally);

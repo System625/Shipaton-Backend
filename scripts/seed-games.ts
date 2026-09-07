@@ -9,12 +9,19 @@
 // limit maxes at 500 and IGDB allows 4 req/sec, so ~100k games is ~200 requests
 // for the games themselves plus the same again for time-to-beat.
 //
-// For the hackathon this seeds a subset (default: released since 2023), not all
-// 374,515 games. Full coverage can wait.
+// TWO PASSES, both from spec §2: "everything from the last 3 years, plus anything
+// popular enough to matter". Only the first was implemented until 7 Sep, which left
+// the catalog with none of Elden Ring, The Witcher 3, GTA V, Cyberpunk 2077, BotW,
+// RDR2, Hollow Knight or Stardew Valley — the wrong half of the library for an app
+// whose whole subject is the backlog you already own. See seedPopularPageQuery.
+//
+// Each pass resumes independently; an interrupted run prints the exact env var to
+// set. The two id cursors are separate because the passes walk id space separately.
 
 import {
   igdbQuery,
   seedPageQuery,
+  seedPopularPageQuery,
   type IgdbGame,
 } from "../supabase/functions/_shared/igdb.ts";
 import {
@@ -28,18 +35,10 @@ import { admin } from "./supabase-admin.ts";
 const creds = igdbCreds();
 const since = process.env.SEED_RELEASED_SINCE ?? "2023-01-01";
 const sinceUnix = Math.floor(new Date(since).getTime() / 1000);
-const resumeFrom = Number(process.env.SEED_RESUME_AFTER_ID ?? 0);
+const minPopularity = Number(process.env.SEED_MIN_POPULARITY ?? 5);
 
-console.log(`seeding games released since ${since} (igdb id > ${resumeFrom})`);
-
-let after = resumeFrom;
-let total = 0;
-let altTotal = 0;
-
-for (;;) {
-  const page = await igdbQuery<IgdbGame>(creds, "games", seedPageQuery(after, sinceUnix));
-  if (page.length === 0) break;
-
+/** Writes one page of IGDB games, with platform links and alt titles. */
+async function writePage(page: IgdbGame[]): Promise<number> {
   const ttbs = await fetchTimeToBeats(creds, page.map((g) => g.id));
   const rows = page.map((g) => mapIgdbGame(g, ttbs.get(g.id)));
 
@@ -47,7 +46,7 @@ for (;;) {
     .from("games")
     .upsert(rows, { onConflict: "igdb_id" })
     .select("id, igdb_id");
-  if (error) throw new Error(`games upsert failed at id ${after}: ${error.message}`);
+  if (error) throw new Error(`games upsert failed: ${error.message}`);
 
   const idByIgdb = new Map((data ?? []).map((r) => [r.igdb_id as number, r.id as string]));
   const links = page.flatMap((g) =>
@@ -62,7 +61,7 @@ for (;;) {
       .upsert(links, { onConflict: "game_id,platform_id", ignoreDuplicates: true });
     // A platform IGDB knows about but we have not seeded violates the FK. Seed
     // platforms first; this only warns so one bad row cannot kill a long run.
-    if (linkError) console.warn(`  platform links skipped at id ${after}: ${linkError.message}`);
+    if (linkError) console.warn(`  platform links skipped: ${linkError.message}`);
   }
 
   // Alternative titles ("BG3", "GTA V", "BotW"). Warn-only for the same reason as
@@ -71,18 +70,55 @@ for (;;) {
     const gameId = idByIgdb.get(g.id);
     return gameId ? mapAltTitles(g, gameId) : [];
   });
+  let altCount = 0;
   if (altRows.length > 0) {
     const { error: altError } = await admin
       .from("game_alt_titles")
       .upsert(altRows, { onConflict: "game_id,match_title", ignoreDuplicates: true });
-    if (altError) console.warn(`  alt titles skipped at id ${after}: ${altError.message}`);
-    else altTotal += altRows.length;
+    if (altError) console.warn(`  alt titles skipped: ${altError.message}`);
+    else altCount = altRows.length;
   }
-
-  total += page.length;
-  after = page[page.length - 1].id;
-  // Resume point, so an interrupted seed does not start over.
-  console.log(`games: ${total}  alt titles: ${altTotal}  (SEED_RESUME_AFTER_ID=${after})`);
+  return altCount;
 }
 
-console.log(`done. ${total} games, ${altTotal} alternative titles.`);
+/** Walks one pass to exhaustion, paging on ascending igdb id. */
+async function runPass(
+  label: string,
+  resumeEnvVar: string,
+  pageQuery: (afterId: number) => string,
+): Promise<{ games: number; altTitles: number }> {
+  let after = Number(process.env[resumeEnvVar] ?? 0);
+  let games = 0;
+  let altTitles = 0;
+  console.log(`\n=== ${label} (resuming from igdb id > ${after}) ===`);
+
+  for (;;) {
+    const page = await igdbQuery<IgdbGame>(creds, "games", pageQuery(after));
+    if (page.length === 0) break;
+
+    altTitles += await writePage(page);
+    games += page.length;
+    after = page[page.length - 1].id;
+    console.log(`  games: ${games}  alt titles: ${altTitles}  (${resumeEnvVar}=${after})`);
+  }
+  console.log(`${label}: ${games} games, ${altTitles} alternative titles.`);
+  return { games, altTitles };
+}
+
+const recent = await runPass(
+  `pass 1/2 — released since ${since}`,
+  "SEED_RESUME_AFTER_ID",
+  (afterId) => seedPageQuery(afterId, sinceUnix),
+);
+
+const backCatalogue = await runPass(
+  `pass 2/2 — before ${since}, total_rating_count >= ${minPopularity}`,
+  "SEED_RESUME_POPULAR_AFTER_ID",
+  (afterId) => seedPopularPageQuery(afterId, sinceUnix, minPopularity),
+);
+
+console.log(
+  `\ndone. ${recent.games + backCatalogue.games} games, ` +
+  `${recent.altTitles + backCatalogue.altTitles} alternative titles ` +
+  `(${recent.games} recent, ${backCatalogue.games} back catalogue).`,
+);

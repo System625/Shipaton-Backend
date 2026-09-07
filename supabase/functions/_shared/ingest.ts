@@ -93,9 +93,11 @@ export async function ingestFromSearch(
   limit = 20,
 ): Promise<number> {
   const games = await igdbQuery<IgdbGame>(creds, "games", searchGamesQuery(term, limit));
-  // Apicalypse `search` ignores some `where` clauses, so enforce the type rules
-  // here as well as in the query. Without this, DLC and bundles reach the confirm
-  // screen (spec §4).
+  // Belt and braces. The query filters all three fields server-side and IGDB does
+  // honour them under `search` (verified 7 Sep — the earlier comment here claimed
+  // `search` ignores some `where` clauses, which is not true of these three). Kept
+  // because the cost is one pass over 20 rows and the failure mode is DLC and
+  // editions reaching the confirm screen (spec §4).
   const mainGames = games.filter(
     (g) => g.game_type === 0 && g.parent_game == null && g.version_parent == null,
   );
