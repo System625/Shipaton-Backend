@@ -144,6 +144,94 @@ paths:
             text/plain:
               schema: { type: string, const: ok }
 
+  /games/popular:
+    get:
+      tags: [catalog]
+      operationId: listPopularGames
+      summary: The most-rated games in the catalog
+      description: |
+        Ordered by IGDB's count of **user ratings**, descending — a popularity
+        signal, not a quality one. Do not confuse it with `criticScore`, which is
+        IGDB's aggregate of external critic scores: a game can be widely played and
+        mediocre, or acclaimed and obscure.
+
+        That count is deliberately **not** part of `CatalogGame`. The ordering is
+        the contract; the number behind it is not, so it can be re-tuned without
+        breaking the app.
+
+        The list contains only games with at least one rating, so it is finite at
+        **15,948 entries** (of 89,117 catalog rows). Paging past the end returns
+        `[]` rather than an error. Ties are broken by a stable internal id, so
+        `limit`/`offset` paging never drops or repeats a row.
+
+        Served by the same `games` function as `/games/{id}`; `popular` is not a
+        valid uuid, so the two cannot collide.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: >
+            Page size. Values above 100 are clamped to 100; a non-integer or
+            unparseable value falls back to 20 rather than erroring.
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: >
+            Rows to skip. Negative and unparseable values fall back to 0.
+      responses:
+        "200":
+          description: >
+            A page of games, most-rated first. Captured from the deployed function
+            with `?limit=2` on 8 September 2026.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CatalogGame" }
+              example:
+                - id: b84425b1-2d74-42f7-9975-ceb7f8e9cc0e
+                  title: Grand Theft Auto V
+                  slug: grand-theft-auto-v
+                  platforms:
+                    - { id: 6, name: PC (Microsoft Windows), slug: win }
+                    - { id: 9, name: PlayStation 3, slug: ps3 }
+                    - { id: 48, name: PlayStation 4, slug: ps4--1 }
+                    - { id: 167, name: PlayStation 5, slug: ps5 }
+                    - { id: 12, name: Xbox 360, slug: xbox360 }
+                    - { id: 49, name: Xbox One, slug: xboxone }
+                    - { id: 169, name: Xbox Series X|S, slug: series-x-s }
+                  releaseDate: "2013-09-17"
+                  genres: [Shooter, Racing, Adventure]
+                  coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co2lbd.jpg
+                  timeToBeatHours: 127.5
+                  sessionFit: high
+                  criticScore: 88
+                  abbreviation: GTA
+                  colorKey: purple
+                - id: 69b228a0-0452-4b69-a0a9-c9a0237da5d3
+                  title: "The Witcher 3: Wild Hunt"
+                  slug: the-witcher-3-wild-hunt
+                  platforms:
+                    - { id: 130, name: Nintendo Switch, slug: switch }
+                    - { id: 6, name: PC (Microsoft Windows), slug: win }
+                    - { id: 48, name: PlayStation 4, slug: ps4--1 }
+                    - { id: 167, name: PlayStation 5, slug: ps5 }
+                    - { id: 49, name: Xbox One, slug: xboxone }
+                    - { id: 169, name: Xbox Series X|S, slug: series-x-s }
+                  releaseDate: "2015-05-19"
+                  genres: [Role-playing (RPG), Adventure]
+                  coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/coaarl.jpg
+                  timeToBeatHours: 70.8
+                  sessionFit: low
+                  criticScore: 92
+                  abbreviation: W3W
+                  colorKey: green
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
   /games/{id}:
     get:
       tags: [catalog]
@@ -190,12 +278,12 @@ paths:
                 colorKey: red
         "400":
           description: >
-            The last path segment is not a uuid. `/games` with no id gives this
-            too, not a 404.
+            The last path segment is neither a uuid nor `popular`. `/games` with
+            no id gives this too, not a 404.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FunctionError" }
-              example: { error: "expected /games/<uuid>" }
+              example: { error: "expected /games/<uuid> or /games/popular" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
           description: Well-formed uuid, no such game.

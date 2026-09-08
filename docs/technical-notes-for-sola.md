@@ -126,6 +126,46 @@ Fields that can be absent: `releaseDate`, `coverImageUrl`, `timeToBeatHours`,
 `sessionFit`, `criticScore`, `slug`. Only about 5% of games have a time to beat, so
 treat that as usually missing rather than usually present.
 
+## 3b. The popular endpoint you asked for — live now
+
+`GET /games/popular` is deployed and returns the same `CatalogGame[]` as everything
+else, so it needs no new type on your side:
+
+```ts
+export async function popularGames(limit = 20, offset = 0): Promise<CatalogGame[]> {
+  const { data, error } = await supabase.functions.invoke(
+    `games/popular?limit=${limit}&offset=${offset}`, { method: 'GET' },
+  );
+  if (error) throw error;
+  return data;
+}
+```
+
+`limit` defaults to 20 and is capped at 100; `offset` pages. Paging past the end
+gives `[]`, not an error, and paging is stable — a row cannot be dropped or repeated
+between pages.
+
+**What "popular" means here.** It is ordered by IGDB's count of *user ratings*, so it
+is a measure of how widely played something is, not how good it is. That is a
+different number from `criticScore` — a game can be widely played and mediocre, or
+acclaimed and obscure. The count itself is **not** in the response: the ordering is
+the contract, so I can re-tune it without breaking your screens.
+
+**The list is finite: 15,948 games**, out of 89,117 in the catalog. The other 73,169
+have no ratings at all and are excluded deliberately — they are not "less popular
+games", they are rows with no signal, and including them would put something random
+on page 4. So do not build a UI that assumes infinite scroll; it ends.
+
+The top of the list, for what to expect: Grand Theft Auto V, The Witcher 3, Portal 2,
+Skyrim, GTA: San Andreas, Portal, Red Dead Redemption 2, God of War.
+
+**Search ranking improved at the same time**, off the same data — you do not have to
+do anything, results just get better. Searching `cyberpunk` used to return *Cyberpunk
+SFX* and *Cyberpunk Sex* above *Cyberpunk 2077*, because the old ranking favoured
+short titles. It now returns Cyberpunk 2077 first. Two known cases are still not
+right — `zelda botw` and `dragonsdogma2` return a near-miss first — but both are in
+the top 5, and both are a different bug that I will fix separately.
+
 ## 4. Where your type and mine differ, and who wins
 
 I went through the app repo properly this time rather than guessing. The rule I used:

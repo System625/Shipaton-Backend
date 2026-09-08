@@ -112,6 +112,24 @@ async function main() {
     const witcherHit = (witcher.body as CatalogGame[])?.some((g) => /witcher 3/i.test(g.title));
     check("pre-2023 back catalogue is reachable", witcherHit === true);
 
+    // STATUS 4b: a partial query where similarity alone ranks shovelware first,
+    // because it favours short titles. Cyberpunk SFX and Cyberpunk Sex both score
+    // 0.714 against Cyberpunk 2077's 0.667, and the popularity blend is the only
+    // thing putting the real game on top. If this regresses, the ranking weight in
+    // migration 20260908154949 is the place to look.
+    const partial = await call("/search?q=cyberpunk", token);
+    const partialTop = (partial.body as CatalogGame[])?.[0];
+    check("a partial query ranks the famous game first, not the shortest title",
+      partialTop?.title === "Cyberpunk 2077", partialTop?.title);
+
+    // `score` is deliberately absent from CatalogGame -- toCatalogGame drops it, so
+    // the app cannot depend on a ranking internal. That the underlying score stays
+    // RAW similarity rather than the blended value matters to /search's own
+    // LIVE_LOOKUP_THRESHOLD check, and is asserted in SQL, not here: over HTTP
+    // there is no score field to inspect.
+    check("score is not exposed in the app contract",
+      partialTop !== undefined && !("score" in partialTop));
+
     // ---- 3. /games/:id ----
     console.log("\n3. /games/:id");
     const target = results?.[rank >= 0 ? rank : 0];

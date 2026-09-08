@@ -343,6 +343,25 @@ games with `total_rating_count >= 5` — 13,558 rows, +18%, under a minute.
 `witcher 3` all rank first. IGDB's acronym data is good. **The hand-curated alias
 fallback this section used to propose is not needed** — don't build it.
 
+**Popularity coverage, and how much of IGDB is actually worth having — measured
+8 Sep, because nothing in the repo recorded it and the year limit kept being raised
+as a risk.** It is not one:
+
+| | |
+|---|---|
+| main games in all of IGDB | **305,824** (the spec's "374,515" counts DLC, bundles and editions) |
+| of those, carrying a release date | 228,333 |
+| **with >= 5 user ratings, all years** | **15,029** |
+| of those, already in our catalog | **15,012** |
+| catalog rows with >= 1 rating | 15,948 of 89,117 |
+
+So the catalog already holds **99.9%** of every game in IGDB that has enough ratings
+to plausibly appear in a popular list. The ~216k games we do not have are unrated
+obscurities, and no popularity or ranking work is limited by their absence. Where
+their absence *does* bite is **share ingestion** (§7): an obscure shared title
+dead-ends at the confirm screen. That is a separate problem, and widening the seed
+is not the fix for it — the live IGDB lookup in `/search` is.
+
 **Time-to-beat coverage is 5.1%** (4,523 of 89,117) and that is not a seed defect:
 only 7,534 entries in all of IGDB carry a `normally` value, so we hold ~60% of every
 time-to-beat that exists. `deriveSessionFit` falls back to genres and keywords, so
@@ -366,32 +385,75 @@ Above it, corruption. Tune the constant in `mapping.ts`; nothing else reads it.
 > left 6 rows the fixed mapping would never produce. Resume is for interruptions,
 > not for code changes.
 
-### 4b. Search ranking has no popularity signal — **OPEN, decide before demo**
+### 4b. Search ranking popularity signal — **DONE 8 Sep, partially**
 
-Measured against the seeded catalog, `cyberpunk` returns **Cyberpunk SFX** and
-**Cyberpunk Sex** above **Cyberpunk 2077**. `zelda botw` lands 4th, `dragonsdogma2`
-sits behind `Dragon's Dogma`. Nothing is unfindable — all 12 test cases are in the
-top 5 — but the most-wanted result is not always first, on the app's primary path.
+`games.total_rating_count` now exists, is backfilled for all 89,117 rows, and feeds
+both `shelf_search_games` and `/games/popular`. **One of the three known failures is
+fixed and the other two turned out not to be popularity problems at all.**
 
-Cause: `shelf_search_games` ranks on trigram similarity alone, and similarity favours
-**short** titles. A three-word shovelware title beats a famous game whose name is
-longer than the query. No amount of alt-title work fixes this; it is a ranking
-problem, not a matching one.
+The rule, in `shelf_search_games` (migration `20260908154949`):
 
-Fix, when someone picks it up: store IGDB's `total_rating_count` and use it as a
-tie-break among rows of comparable similarity. The seed already filters on the field
-in pass 2 (`seedPopularPageQuery`) without storing it, so this is a migration plus a
-re-seed, not new API work. Deliberately **not** done on 7 Sep — it changes ranking
-semantics and wants a decision, not a drive-by.
+```
+order by similarity + 0.15 * ln(1 + total_rating_count) / ln(1 + 10000)
+```
 
-### 5. `/search` and `/games/:id` live — **DONE 7 Sep**
+Log-scaled because the counts are wildly skewed (73,169 rows at 0, maximum 5,952);
+the 10000 divisor is a fixed constant, not `max()`, so IGDB's counts growing does
+not silently re-tune ranking. 0.15 is the whole budget popularity gets, so a rival
+needs >= 0.85 similarity to displace an exact match — checked by searching the exact
+titles of eight 0-rating obscure games, each of which still comes back first.
 
-Both are deployed to `sbunhrxwhraigwpidbxk` and verified against a real signed JWT.
+**`score` is still raw similarity, deliberately.** `supabase/functions/search/index.ts`
+compares `data[0].score` to `LIVE_LOOKUP_THRESHOLD` (0.55) to decide whether to make
+a live IGDB call, and the spec has the app bucket on the same number. Returning the
+blended value would lift every popular game over those thresholds and suppress live
+lookups that should happen. Measured over 400 real-title queries: the blend changed
+the top row in 0 of them and crossed 0.55 in 0 of them.
+
+| query | before | after |
+|---|---|---|
+| `cyberpunk` | Cyberpunk SFX (0.714), Cyberpunk Sex (0.714) above Cyberpunk 2077 (0.667, 1,647 ratings) | **Cyberpunk 2077** |
+| `zelda botw` | Hyrule Warriors: Age of Calamity | unchanged — *not a popularity bug* |
+| `dragonsdogma2` | Dragon's Dogma | unchanged — *not a popularity bug* |
+
+The other 11 cases were already correct and are unchanged. `verify:functions` pins
+the `cyberpunk` case so it cannot regress silently.
+
+**The two remaining cases are different bugs, and no popularity rule can fix them.**
+Do not re-open this section expecting them:
+
+- `dragonsdogma2` — Dragon's Dogma (0.588, **113** ratings) beats Dragon's Dogma II
+  (0.526, **89** ratings). The wanted row is also the *less*-rated one, so
+  popularity makes it marginally worse, not better. The needle normalizes to
+  `dragonsdogma2` with no spaces and cannot match `dragons dogma 2`. **Tokenization.**
+- `zelda botw` — Breath of the Wild scores 0.445, *below* A Link to the Past at
+  0.452, because neither the full title nor the `botw` alternative title is similar
+  to the mixed needle. `botw` on its own ranks it first. **Multi-token queries.**
+
+Both are worth one change together rather than two drive-bys, and neither is
+blocking: every case is still in the top 5.
+
+### 5. `/search`, `/games/:id` and `/games/popular` live — **DONE 7-8 Sep**
+
+All three are deployed to `sbunhrxwhraigwpidbxk` and verified against a real signed JWT.
 `share-resolve`, `share-confirm` and `roulette` are deliberately **not** deployed;
 they are steps 7 and 8 and nothing has exercised them yet.
 
+`/games/popular` (added 8 Sep) lives inside the `games` function rather than its
+own: Supabase routes an edge function by its **first** path segment, so a separate
+`popular` function could only answer on `/functions/v1/popular`, which is not where
+a `/games` collection belongs. `popular` is not a valid uuid, so the two cannot
+collide. It takes `limit` (default 20, capped at 100) and `offset`, orders by
+`total_rating_count desc, id`, and excludes the 73,169 zero-rating rows — those are
+not less-popular games, they are rows with no signal, and ordering them by id would
+put an arbitrary one on page 4. The list is therefore finite at **15,948** rows.
+
+The id in that ORDER BY is load-bearing, not decoration: thousands of rows share a
+rating count, and without a unique tie-break Postgres may return ties in a different
+order per call, so offset paging would drop and repeat rows between pages.
+
 ```sh
-npm run verify:functions   # 29 checks against the DEPLOYED urls, not localhost
+npm run verify:functions   # 48 checks against the DEPLOYED urls, not localhost
 ```
 
 `scripts/verify-functions.ts` creates its own user, signs in, and walks the whole
