@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "verify:auth": "tsx scripts/verify-auth-rls.ts",
     "verify:functions": "tsx scripts/verify-functions.ts",
-    "verify:roulette": "tsx scripts/verify-roulette.ts"
+    "verify:roulette": "tsx scripts/verify-roulette.ts",
+    "verify:share": "tsx scripts/verify-share.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

@@ -1,4 +1,7 @@
-// POST /share/resolve {url} -> {intakeId, extractedText, candidates[]}
+// POST /share-resolve {url} -> {intakeId, extractedText, candidates[]}
+//
+// The path is share-resolve, matching the function directory. It is NOT /share/resolve;
+// the gateway routes on the directory name and there is no nested path.
 //
 // A share_intake row is written the instant the share arrives, before any matching.
 // If resolution fails the link is still saved and the user can come back to it.
@@ -12,6 +15,10 @@ import { ingestFromSearch } from "../_shared/ingest.ts";
 
 const CONFIDENT = 0.55; // best guess, shown large at the top
 const PLAUSIBLE = 0.30; // shown as alternatives; below this, unmatched
+
+// Which search term produced a row, so confidence can be judged against the text
+// that actually found the game rather than the caption as a whole.
+type Candidate = CatalogRow & { foundBy: string };
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -37,25 +44,53 @@ Deno.serve(async (req) => {
     .single();
   if (intakeError) return errorResponse(intakeError.message, 500);
 
+  /**
+   * Is the best row good enough to stop looking, and to assert to the user?
+   *
+   * A YouTube title is a genuine attempt at the game's name, so trigram proximity
+   * is real evidence and the threshold stands. A TikTok hashtag is not an attempt
+   * at anything — it is a word someone tagged — so proximity means nothing there
+   * and the bar is the stronger claim: the term IS one of this game's names, up to
+   * spacing. See migration 20260908183000 for the pet video that proved it.
+   */
+  async function settled(best: Candidate | undefined): Promise<boolean> {
+    if (!best || (best.score ?? 0) < PLAUSIBLE) return false;
+    if (provider === "youtube") return (best.score ?? 0) >= CONFIDENT;
+    const { data } = await auth.supabase.rpc("shelf_term_names_game", {
+      term: best.foundBy,
+      p_game_id: best.id,
+    });
+    return data === true;
+  }
+
   let extractedText: string | null = null;
-  let candidates: CatalogRow[] = [];
+  let candidates: Candidate[] = [];
+  let confident = false;
 
   try {
     const oembed = await fetchOEmbed(rawUrl, provider);
     extractedText = oembed?.title ?? null;
 
     if (extractedText) {
-      for (const term of extractCandidateTexts(extractedText, provider).slice(0, 4)) {
+      const terms = extractCandidateTexts(extractedText, provider);
+
+      for (const term of terms.slice(0, 4)) {
         const { data } = await auth.supabase
           .rpc("shelf_search_games", { q: term, max_results: 5 })
           .returns<CatalogRow[]>();
-        candidates = merge(candidates, data ?? []);
-        if ((candidates[0]?.score ?? 0) >= CONFIDENT) break;
+        candidates = merge(candidates, (data ?? []).map((row) => ({ ...row, foundBy: term })));
+        // Stop on a match worth asserting, not merely on a high score. A caption
+        // like "#aesthetic #eldenring" used to break here on the junk hit from the
+        // first tag and never reach the tag naming the actual game.
+        if (await settled(candidates[0])) {
+          confident = true;
+          break;
+        }
       }
 
       // Nothing convincing locally? One IGDB search, then look again.
-      if ((candidates[0]?.score ?? 0) < CONFIDENT) {
-        const term = extractCandidateTexts(extractedText, provider)[0];
+      if (!confident) {
+        const term = terms[0];
         if (term) {
           const admin = createClient(
             Deno.env.get("SUPABASE_URL")!,
@@ -66,7 +101,8 @@ Deno.serve(async (req) => {
             const { data } = await auth.supabase
               .rpc("shelf_search_games", { q: term, max_results: 5 })
               .returns<CatalogRow[]>();
-            candidates = merge(candidates, data ?? []);
+            candidates = merge(candidates, (data ?? []).map((row) => ({ ...row, foundBy: term })));
+            confident = await settled(candidates[0]);
           }
         }
       }
@@ -95,13 +131,13 @@ Deno.serve(async (req) => {
     extractedText,
     // The confirm step is required. Silently adding the wrong game to someone's
     // backlog is the fastest way to kill trust in the one feature that makes this
-    // app different.
-    confident: (top[0]?.score ?? 0) >= CONFIDENT,
+    // app different. `confident` only means "show this one large".
+    confident,
     candidates: top.map(toCatalogGame),
   });
 });
 
-function merge(existing: CatalogRow[], incoming: CatalogRow[]): CatalogRow[] {
+function merge(existing: Candidate[], incoming: Candidate[]): Candidate[] {
   const byId = new Map(existing.map((r) => [r.id, r]));
   for (const row of incoming) {
     const prev = byId.get(row.id);

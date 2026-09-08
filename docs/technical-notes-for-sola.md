@@ -12,6 +12,128 @@ Your structure made this easy to pick up. `searchCatalog` and `findCatalogGame` 
 
 ---
 
+# Update, 8 September: the share flow is live, and two things you are working around already exist
+
+**This section is the newest and wins over both dated sections below.** I read your
+`Backend Handoff — Prysm` artifact and went through the app repo at
+`akintewe/revenue-cat-game` (through commit `7990f0f`). Auth, the Supabase client and
+the live search wiring all look right — `functions.invoke` with the session token is
+exactly the intended seam.
+
+## Two of the five things you flagged are already built
+
+Your doc says it is client-observable only, and that is where the gap comes from: you
+were reading a version of the API reference that predates 8 September. My fault, not
+yours — the link pins viewers to the version they were shared, and I did not move the
+pin after updating it. Tunde is moving it now.
+
+| Your handoff says | Actually |
+|---|---|
+| `/roulette` — not deployed | **Live since 8 Sep.** Verified against a real backlog, 45 checks |
+| `/popular` — doesn't exist, faked with 15 hardcoded search queries | **`GET /games/popular` is live.** Real IGDB popularity, paginated |
+| `/share-resolve`, `/share-confirm` — not deployed | You were right. **Both live as of today** — see below |
+| Google/Apple sign-in | You were right. Still waiting on Josh |
+| Friends feed, notifications | You were right. No backend, and not in the spec |
+
+**Delete `POPULAR_SEED_QUERIES` and the 15-call fan-out in `unifiedCatalog.ts`.** The
+comment above it — "There's no browse or trending endpoint — the catalog is search-only
+by design" — is no longer true. One call replaces it:
+
+```
+GET /games/popular?limit=20&offset=0   ->  CatalogGame[]
+```
+
+Same `CatalogGame` shape you already normalize. `limit` caps at 100, ties break by id
+so paging never repeats or drops a row. That also fixes the thing your own note
+worried about: it is real popularity, not fifteen titles someone typed out.
+
+## The share flow, end to end
+
+Two calls. Both `POST`, both need the user token, both `application/json`.
+
+```
+POST /share-resolve   { "url": "<whatever the share sheet gave you>" }
+  -> { intakeId, provider, extractedText, confident, candidates[] }
+
+POST /share-confirm   { "intakeId": "<from above>", "gameId": "<the one they tapped>" }
+  -> LibraryEntry
+```
+
+Note the paths are `share-resolve` and `share-confirm` with a hyphen. Not
+`/share/resolve` — some older comments in my repo said that and they were wrong.
+
+**`/share-resolve` never writes to the library.** It saves the link and comes back
+with guesses. Things worth designing around:
+
+- **It always returns 200, even when it has no idea.** `candidates: []` means
+  "unmatched" — show the search box. The link is saved either way; nothing a user
+  shares is ever dropped, so you can always offer "we could not read that one, search
+  for it instead" rather than an error state.
+- **`confident: true` means show one result large. It never means skip the confirm
+  step.** The confirm screen is the whole reason this can be trusted.
+- **`extractedText`** is the caption or title we read. Worth showing as "we read this
+  from your link" — it makes a wrong guess legible instead of baffling.
+- **`candidates` is at most 5, best first**, and each one is a full `CatalogGame`, so
+  it renders with the components you already have.
+
+**`/share-confirm` is the only thing in the entire system that writes
+`library_entries`.** It sets `status: 'backlog'` and stores `source_url` — the TikTok
+or YouTube link the game came from. That field is the differentiator: it is what makes
+a finish card say "found on TikTok in March, beaten in September".
+
+Re-confirming a game the user already has is safe. It returns the existing row
+untouched — if they had already beaten it, it stays beaten. It will not knock their
+progress back to backlog.
+
+The response is the `library_entries` row **as stored, in snake_case**
+(`game_id`, `source_url`, `added_at`), unlike `CatalogGame` which is camelCase. That
+is deliberate and documented, but it will bite if you assume otherwise.
+
+## The app-side gap, which is bigger than the share screens
+
+**Your library is entirely local.** `useLibraryStore` is zustand + AsyncStorage with
+seven hardcoded demo entries, and nothing in the app reads or writes
+`library_entries` on the server. That has three consequences worth knowing before you
+build the share UI:
+
+1. **`/roulette` will keep returning `null`** for every real account no matter what we
+   do on my side. It rolls the server's `library_entries`, which only
+   `/share-confirm` fills. A share that lands in local state only is invisible to it.
+2. **The library does not survive a reinstall or a second device**, which for a
+   backlog tracker is the feature.
+3. **`catalogId` currently mixes two kinds of id.** The seeded demo entries use slugs
+   (`'elden-ring'`, `'hades-2'`) and anything from search uses backend uuids.
+   `library_entries.game_id` is a uuid foreign key into the catalog, so the slug rows
+   can never sync — they have no server-side game to point at. Worth deciding what
+   happens to them before you write the sync, rather than after.
+
+I am not asking you to rewrite the library this week. But the share flow only shows up
+in the app if the library reads from the server, so the two are one job, not two.
+
+## What I need from you
+
+**About 20 real gaming TikTok share links.** This is the one thing I cannot do from a
+laptop, and it is the last unmeasured part of the feature.
+
+Everything above is verified against one real gaming YouTube link and one real TikTok
+link, which proves the machinery works and that a video with no game in it correctly
+comes back unmatched. What it does not tell me is the hit rate on captions people
+actually write. Caption extraction is guesswork until that is measured.
+
+Just share 20 gaming TikToks to yourself and paste the URLs. No captions needed — I
+pull those.
+
+## Two smaller things I noticed
+
+- **`app.json` still has `com.nathanakin.revenuecatgame`** as both the iOS bundle
+  identifier and the Android package. That has to change before the first Play upload,
+  because the package name is permanent once uploaded.
+- **The app now calls itself Prysm**; the backend, the spec and every doc say Shelf.
+  Not a problem, but let us pick one before store listings — and tell me, because I
+  will rename my side to match.
+
+---
+
 # Update, 7 September: it is live
 
 The backend is deployed and working against real data. Everything below this line was

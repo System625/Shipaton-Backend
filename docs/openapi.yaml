@@ -4,16 +4,15 @@
 # on 8 September 2026, not written from the source. `npm run verify:functions`
 # re-checks the live endpoints against this contract in one command.
 #
-# /search, /games/{id}, /games/popular and /roulette are deployed. /share-resolve
-# and /share-confirm exist in supabase/functions but are NOT deployed — calling them
-# today returns the gateway's 404 {"code":"NOT_FOUND"}. They are documented under
-# the `unreleased` tag so the shapes are agreed before they ship.
+# Every endpoint below is deployed. /share-resolve and /share-confirm went live on
+# 8 September 2026 and are checked by `npm run verify:share` (55 checks); the rest by
+# `npm run verify:functions` and `npm run verify:roulette`. Nothing here is aspirational.
 
 openapi: 3.1.0
 
 info:
   title: Shelf backend API
-  version: "2026-09-08.2"
+  version: "2026-09-08.3"
   description: |
     Games catalog, share ingestion and roulette for the Shelf app.
 
@@ -45,10 +44,11 @@ tags:
     description: >
       Live and verified. Reads the caller's own `library_entries` rather than the
       catalog, so what it returns depends on what that user has saved.
-  - name: unreleased
+  - name: share
     description: >
-      Written and reviewed, not deployed. Shapes may still change; the deployment
-      is what makes them real.
+      Live and verified 8 September 2026. Turns a shared TikTok or YouTube link
+      into a library row. `/share-confirm` is the only path that writes
+      `library_entries`.
 
 security:
   - userToken: []
@@ -309,9 +309,10 @@ paths:
         Picks from the caller's own `library_entries`, so it needs a real backlog
         to draw from — it is not a catalog endpoint. Entries with status `backlog`
         or `playing` are eligible; `beaten` and `dropped` are never returned.
-        **Nothing in the app writes library rows yet** (that is `/share-confirm`,
-        still unreleased), so against a fresh account this returns `null` until
-        rows exist.
+        A fresh account has no rows, so this returns `null` until the user has
+        confirmed at least one share. `/share-confirm` is what fills it; that is
+        now live, and `npm run verify:share` asserts the whole chain — confirm a
+        game, then roll, and get that game back.
 
         Two inputs, deliberately. `hours` is how long the user has tonight; `size`
         is how big a game they are in the mood for. Total time-to-beat and session
@@ -410,13 +411,12 @@ paths:
 
   /share-resolve:
     post:
-      tags: [unreleased]
+      tags: [share]
       operationId: resolveShare
-      summary: "Turn a shared TikTok/YouTube link into game candidates (NOT DEPLOYED)"
+      summary: "Turn a shared TikTok/YouTube link into game candidates"
       description: |
-        **Not deployed. Calling this today returns the gateway's 404
-        `{"code":"NOT_FOUND"}`.** Note the path is `share-resolve`, matching the
-        function directory — not `/share/resolve` as some source comments say.
+        Deployed and verified 8 September 2026 (`npm run verify:share`). The path
+        is `share-resolve`, matching the function directory — not `/share/resolve`.
 
         A `share_intake` row is written the instant the share arrives, before any
         matching is attempted. If resolution then fails, the link is still saved
@@ -427,6 +427,13 @@ paths:
         oEmbed quality varies wildly by provider. YouTube gives a clean title;
         TikTok gives the whole caption, hashtags and emoji included, so the text
         is cleaned into several candidate terms and each is tried in turn.
+
+        **Both oEmbed endpoints work from the deployed function.** A cross-check
+        report had claimed they throttle or 403 datacenter IPs, which would have
+        forced a fallback to scraping OpenGraph tags. Probed from the edge runtime
+        on 8 Sep: YouTube and TikTok both answered 200, with and without a browser
+        User-Agent, caption and hashtags intact. There is no OpenGraph fallback and
+        none is needed.
 
         This endpoint never writes to the user's library. `confident: true` means
         "show this one large", not "add it".
@@ -466,12 +473,11 @@ paths:
 
   /share-confirm:
     post:
-      tags: [unreleased]
+      tags: [share]
       operationId: confirmShare
-      summary: "Commit the user's pick to their library (NOT DEPLOYED)"
+      summary: "Commit the user's pick to their library"
       description: |
-        **Not deployed. Calling this today returns the gateway's 404
-        `{"code":"NOT_FOUND"}`.**
+        Deployed and verified 8 September 2026 (`npm run verify:share`).
 
         The user has tapped a game on the confirm screen. This is the only path
         that writes a shared game into a library, and `source_url` travels with
@@ -479,9 +485,13 @@ paths:
         card interesting: "found on TikTok in March, beaten in September" beats a
         bare rating.
 
-        Idempotent per (user, game): a repeat confirm upserts the same row rather
-        than erroring or duplicating. `source_kind` is derived from the intake's
-        provider, not sent by the client.
+        **Idempotent per (user, game), and idempotent means "leave it alone".**
+        A repeat confirm returns the row that is already there, with the user's
+        `status`, `rating` and `notes` untouched — sharing a game you have already
+        beaten does not knock it back to `backlog`. Provenance is only ever filled
+        in, never over: a game added by hand and later shared gains the link it
+        came from, one that already carries a `source_url` keeps its first.
+        `source_kind` is derived from the intake's provider, not sent by the client.
       requestBody:
         required: true
         content:
@@ -717,11 +727,20 @@ components:
             your link".
         confident:
           type: boolean
-          description: >
-            The top candidate scored at or above 0.55. Show it large. It is still
-            a suggestion — the confirm step is never skipped, because silently
-            adding the wrong game to someone's backlog kills trust in the one
-            feature that makes this app different.
+          description: |
+            Show the top candidate large. It is still a suggestion — the confirm
+            step is never skipped, because silently adding the wrong game to
+            someone's backlog kills trust in the one feature that makes this app
+            different.
+
+            The bar differs by provider, deliberately. A **YouTube** title is a
+            real attempt at the game's name, so the trigram score decides: 0.55 or
+            better. A **TikTok** hashtag is not an attempt at anything — it is a
+            word someone tagged — so proximity is not evidence there, and the bar
+            is that the term IS one of the game's names, up to spacing
+            (`#eldenring` names Elden Ring; `#aesthetic` does not name Aestheta,
+            even at 0.583 similarity). A near-miss stays in `candidates` and can
+            still be tapped; only the assertion is withdrawn.
         candidates:
           type: array
           maxItems: 5

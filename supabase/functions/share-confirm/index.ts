@@ -1,4 +1,7 @@
-// POST /share/confirm {intakeId, gameId} -> LibraryEntry
+// POST /share-confirm {intakeId, gameId} -> LibraryEntry
+//
+// The path is share-confirm, matching the function directory. It is NOT /share/confirm;
+// the gateway routes on the directory name and there is no nested path.
 //
 // The user has tapped a game on the confirm screen. This is the only path that
 // writes a shared game into a library, and source_url comes with it — that field
@@ -34,21 +37,48 @@ Deno.serve(async (req) => {
   const sourceKind =
     intake.provider === "tiktok" || intake.provider === "youtube" ? intake.provider : "manual";
 
-  const { data: entry, error: entryError } = await auth.supabase
+  // Insert rather than upsert. An upsert on (user_id, game_id) rewrites every column
+  // it is given, so re-sharing a game the user has already BEATEN would reset its
+  // status to 'backlog' and overwrite the original source_url — silently undoing
+  // their progress and destroying the very provenance this endpoint exists to keep.
+  // A second confirm is still idempotent: it returns the row that is already there.
+  let { data: entry, error: entryError } = await auth.supabase
     .from("library_entries")
-    .upsert(
-      {
-        user_id: auth.userId,
-        game_id: gameId,
-        status: "backlog",
-        source_url: intake.raw_url,
-        source_kind: sourceKind,
-      },
-      { onConflict: "user_id,game_id", ignoreDuplicates: false },
-    )
+    .insert({
+      user_id: auth.userId,
+      game_id: gameId,
+      status: "backlog",
+      source_url: intake.raw_url,
+      source_kind: sourceKind,
+    })
     .select("*")
-    .single();
-  if (entryError) return errorResponse(entryError.message, 500);
+    .maybeSingle();
+
+  if (entryError) {
+    // 23505 = unique_violation on (user_id, game_id): they already have this game.
+    if (entryError.code !== "23505") return errorResponse(entryError.message, 500);
+
+    const existing = await auth.supabase
+      .from("library_entries")
+      .select("*")
+      .eq("user_id", auth.userId)
+      .eq("game_id", gameId)
+      .single();
+    if (existing.error) return errorResponse(existing.error.message, 500);
+    entry = existing.data;
+
+    // Only fill provenance in, never over. A game added by hand and later shared
+    // gains the link it came from; one already carrying a source keeps its first.
+    if (!entry.source_url) {
+      const patched = await auth.supabase
+        .from("library_entries")
+        .update({ source_url: intake.raw_url, source_kind: sourceKind })
+        .eq("id", entry.id)
+        .select("*")
+        .single();
+      if (!patched.error) entry = patched.data;
+    }
+  }
 
   await auth.supabase
     .from("share_intake")

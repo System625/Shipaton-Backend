@@ -23,10 +23,12 @@ holds **89,117 games, 62,685 alternative titles and 161,738 platform links**. Al
 twelve abbreviation and hashtag cases resolve in the top 5 against real data.
 `/search` on real data works.
 
-**`/search` and `/games/:id` are deployed and verified against a real JWT** (7 Sep),
-which is step 5 — the milestone the rest was building toward. `npm run verify:functions`
-re-checks the deployed endpoints in one command. What remains before the app can call
-them is app-side: it has no Supabase client and no session yet.
+**Every planned endpoint is now deployed and verified against a real JWT.**
+`/search` and `/games/:id` on 7 Sep, `/games/popular` and `/roulette` on 8 Sep, and
+`/share-resolve` + `/share-confirm` on 8 Sep — which was the last build step. Three
+commands re-check the lot: `npm run verify:functions`, `verify:roulette`,
+`verify:share`. **The backend build is done; what is left is app-side and the
+free-tier decision.**
 
 ---
 
@@ -92,7 +94,7 @@ sign-in, membership is the whole Apple requirement, no `.p8` or Services ID. See
 
 ## What is built
 
-Ten migrations in `supabase/migrations/`, applied in filename order — **all of
+Sixteen migrations in `supabase/migrations/`, applied in filename order — **all of
 them applied to the real project**, with the recorded history repaired to match
 these filenames so `db push` is a no-op:
 
@@ -108,6 +110,12 @@ these filenames so `db push` is a no-op:
 | `…000800_fk_indexes.sql` | covering indexes for three unindexed foreign keys |
 | `…000900_alt_titles.sql` | `game_alt_titles` + abbreviation-aware `shelf_search_games()` |
 | `…001000_alt_title_noise.sql` | drops alt titles normalizing to under 2 chars (CJK, Cyrillic) |
+| `…153445_game_popularity.sql` | `games.total_rating_count`, the IGDB popularity signal |
+| `…153626_set_rating_counts_helper.sql` | bulk setter the backfill script drives |
+| `…154531_popular_games.sql` | `shelf_popular_games()` behind `/games/popular` |
+| `…154949_search_popularity_ranking.sql` | popularity blended into search *ordering* only; `score` stays raw similarity |
+| `…161518_roulette_weighted_random.sql` | weighted random selection, so the roulette is actually random |
+| `…183000_share_confidence_guard.sql` | `shelf_term_names_game()`, the TikTok `confident` rule |
 
 Three decisions in there worth knowing before you edit any of it:
 
@@ -563,23 +571,67 @@ them are recorded anywhere in this repo.
 
 Then migrate the app's Zustand store from AsyncStorage-only to synced.
 
-### 7. Share ingestion
+### 7. Share ingestion — **DONE 8 Sep (backend). App side not started.**
 
-Deploy `/share-resolve`, then **immediately call it against a real YouTube link and
-a real TikTok link from the deployed function, not from a laptop.** The oEmbed
-verification on 4 Sep was done from a residential IP; a cross-check report claims
-datacenter IPs get throttled or 403'd, and that half is untested. If it 403s
-deployed and works locally, that is why, and the fallback is the page's OpenGraph
-tags. `npm run smoke:oembed <url>` gives the local baseline to compare against.
+Deployed and verified end to end. `npm run verify:share` re-checks it: 55 checks,
+all passing, including the one that matters most — confirm a game from a real
+YouTube link, then roll, and get that game back. `library_entries` is no longer
+unreachable.
 
-Then collect ~20 real gaming TikTok captions and measure how often the top candidate
-is right. Caption extraction is guesswork until that happens. Sola handles
-`expo-share-intent` + prebuild, which is what loses Expo Go.
+**The datacenter-IP unknown is closed, and the answer was "no problem".** A probe
+function deployed to the edge runtime called both oEmbed endpoints: YouTube and
+TikTok each returned 200, with and without a browser User-Agent, caption and
+hashtags intact. TikTok served it from a different edge (`nginx` rather than the
+`TLB` a laptop gets) and YouTube answered in German, so the request genuinely came
+from a datacenter in another region — it just was not refused. **There is no
+OpenGraph fallback and none is needed.** Delete that worry rather than carrying it.
+
+**Two defects found by running it, both invisible in review.**
+
+1. **A repeat confirm wiped the user's progress.** `share-confirm` used an upsert
+   on `(user_id, game_id)`, and an upsert rewrites every column it is handed — so
+   re-sharing a game you had already *beaten* reset it to `backlog` and overwrote
+   the original `source_url` with the new link. It destroyed exactly the
+   provenance the endpoint exists to keep. Now it inserts, and on conflict returns
+   the existing row untouched, filling `source_url` in only when it is null.
+
+2. **A video about dogs was confidently matched to a game.** TikTok's own
+   documented example video is a pet clip captioned `... #foryoupage #petsoftiktok
+   #aesthetic`. `#aesthetic` scored 0.583 against a game called *Aestheta* and
+   0.556 against *Aesthetic Clicker* — both above the 0.55 confident threshold,
+   both zero-rating shovelware — so the endpoint returned `confident: true`, which
+   the app renders as "here is your game", large.
+
+   The threshold was not mistuned, it was the wrong kind of test. 0.55 was chosen
+   for text that is a genuine attempt at a title. A TikTok hashtag is not an
+   attempt at a title; it is a word someone tagged, so fuzzy proximity is not
+   evidence and no threshold value fixes it. For TikTok the bar is now the stronger
+   claim — the term IS one of the game's names, up to spacing — via
+   `shelf_term_names_game` (migration `20260908183000`). `#eldenring` still names
+   Elden Ring; `#aesthetic` does not name Aestheta. It is also stricter *and*
+   more permissive in the right places: `silksong` scores only 0.391 and was never
+   confident before, but it is exactly the game's alt title, so now it is.
+
+   Same rule fixed a second, quieter bug: the term loop used to `break` on the
+   first score over 0.55, so a caption reading `#aesthetic #eldenring` would stop
+   at the junk hit and never try the tag naming the actual game.
+
+**Still open, and it needs real inputs:** collect ~20 real gaming TikTok captions
+and measure how often the top candidate is right. Everything above was verified
+against one real gaming YouTube link and one real non-gaming TikTok link — enough
+to prove the machinery and the negative case, not enough to know the hit rate.
+That measurement wants share links from an actual phone.
+
+Sola handles `expo-share-intent` + prebuild, which is what loses Expo Go. **The app
+has not started this** — see the app-side note below.
 
 ### 8. Roulette — **DONE 8 Sep**
 
 Deployed, and rolled against a real backlog under a real JWT.
-`npm run verify:roulette` re-checks it: 45 checks, all passing. The script builds
+`npm run verify:roulette` re-checks it: 42-45 checks, nothing failing. The count
+moves between runs because some response-shape checks only fire on fields the picked
+game happens to have, and the pick is random — do not "fix" it to a fixed number.
+The script builds
 its own backlog fixture and tears it down, because `library_entries` is still empty
 on the live project and nothing writes to it until step 7 ships — so roulette
 returns `null` for every real account today. That is correct behaviour, not a fault.
