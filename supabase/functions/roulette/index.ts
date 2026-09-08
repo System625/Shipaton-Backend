@@ -22,14 +22,23 @@ Deno.serve(async (req) => {
 
   const params = new URL(req.url).searchParams;
 
-  const platformId = Number(params.get("platform"));
-  if (!Number.isInteger(platformId)) return errorResponse("platform is required", 400);
+  // Number(null) is 0 and Number("") is 0, and Number.isInteger(0) is true — so
+  // testing the coerced value alone let a MISSING platform through as platform 0,
+  // which matches no row and returned `null`. A caller who forgot the parameter got
+  // the same answer as a caller with an empty backlog. Check the raw string first.
+  const platformRaw = params.get("platform")?.trim();
+  if (!platformRaw) return errorResponse("platform is required", 400);
+  const platformId = Number(platformRaw);
+  if (!Number.isInteger(platformId)) return errorResponse("platform must be an integer platform id", 400);
 
   const size = params.get("size");
   if (size && !SIZE_BUCKETS.has(size)) {
     return errorResponse("size must be quick, medium or epic", 400);
   }
 
+  // Anything unparseable or non-positive falls back to 2. Zero and negatives are
+  // not a shorter evening, they are nonsense, and they would silently select the
+  // short-session weighting.
   const hours = Number(params.get("hours") ?? 2);
 
   const { data, error } = await auth.supabase
@@ -37,7 +46,7 @@ Deno.serve(async (req) => {
       p_user_id: auth.userId,
       p_platform_id: platformId,
       p_size_bucket: size,
-      p_session_hours: Number.isFinite(hours) ? hours : 2,
+      p_session_hours: Number.isFinite(hours) && hours > 0 ? hours : 2,
     })
     .returns<CatalogRow[]>();
 

@@ -1,6 +1,6 @@
 # Shelf backend — where things stand
 
-**Last updated 7 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 8 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
 
 This is the pickup doc. Read it, then `docs/spec.md` for any *why* it doesn't
@@ -227,9 +227,12 @@ Verified while the test rows were in place, then cleaned up:
 - The documented `#eldenring` arithmetic in `oembed.ts` **checks out at 0.615**.
 - `/search` ranking: exact titles 1.00, `cyberpunk` → Cyberpunk 2077 at 0.67,
   `witcher 3` → 0.45 (plausible, not confident — see thresholds below).
-- `shelf_roulette` returns rows under a real JWT, ranks a `playing` game above
-  `backlog` on a short evening, and **never came back empty** for a big-RPG backlog
-  at any session length from 0.5h to 8h — the exact trap it exists to prevent.
+- `shelf_roulette` returns rows under a real JWT and **never came back empty** for a
+  big-RPG backlog at any session length from 0.5h to 8h — the exact trap it exists to
+  prevent. (This line used to say it "ranks a `playing` game above `backlog` on a
+  short evening". That was true of the old ordering and is no longer: since
+  `20260908161518` the pick is weighted-random, so a `playing` game is *likelier* on
+  a short evening, never certain. See step 8.)
 - **RLS isolates two real accounts.** B could not read A's rows, could not write to
   them (0 rows affected), and calling `shelf_roulette` with A's uuid returned
   nothing. `anon` sees 0 rows across all five tables and now has EXECUTE on nothing.
@@ -436,8 +439,9 @@ blocking: every case is still in the top 5.
 ### 5. `/search`, `/games/:id` and `/games/popular` live — **DONE 7-8 Sep**
 
 All three are deployed to `sbunhrxwhraigwpidbxk` and verified against a real signed JWT.
-`share-resolve`, `share-confirm` and `roulette` are deliberately **not** deployed;
-they are steps 7 and 8 and nothing has exercised them yet.
+`share-resolve` and `share-confirm` are deliberately **not** deployed; they are step 7
+and nothing has exercised them yet. (`roulette` was in this list until 8 Sep — it is
+now deployed and verified, see step 8.)
 
 `/games/popular` (added 8 Sep) lives inside the `games` function rather than its
 own: Supabase routes an edge function by its **first** path segment, so a separate
@@ -572,11 +576,52 @@ Then collect ~20 real gaming TikTok captions and measure how often the top candi
 is right. Caption extraction is guesswork until that happens. Sola handles
 `expo-share-intent` + prebuild, which is what loses Expo Go.
 
-### 8. Roulette
+### 8. Roulette — **DONE 8 Sep**
 
-Deploy and actually roll against a seeded backlog. Sanity-check the thing the
-two-input split exists to prevent: a backlog of big RPGs must never come back empty
-just because the session is short.
+Deployed, and rolled against a real backlog under a real JWT.
+`npm run verify:roulette` re-checks it: 45 checks, all passing. The script builds
+its own backlog fixture and tears it down, because `library_entries` is still empty
+on the live project and nothing writes to it until step 7 ships — so roulette
+returns `null` for every real account today. That is correct behaviour, not a fault.
+
+The sanity check the two-input split exists for passes: a PS5 backlog of nothing but
+30h+ games, asked for a 30-minute session, returned a game on all 30 rolls and never
+`null`. `size` is the only filter; `hours` cannot empty a backlog.
+
+**Three defects found by actually rolling, all fixed.** None would have shown up in
+review, and two of them made the feature quietly not do its job.
+
+1. **`Number(params.get("platform"))`** — `Number(null)` is `0` and
+   `Number.isInteger(0)` is true, so a *missing* platform sailed past the
+   "platform is required" guard as platform 0 and returned `null`. A caller who
+   forgot the parameter got the same answer as a caller with an empty backlog.
+   Now a 400, along with empty and fractional values.
+
+2. **`p_session_hours` did nothing at all.** The ranking was three independent sort
+   keys, each multiplied by an hours-dependent weight. Multiplying a sort key by a
+   positive constant cannot change its ordering, so both weight sets ranked
+   identically — verified by ranking a fixture under each and diffing: every
+   position the same. The parameter was decorative, and the spec's "as the window
+   shrinks" behaviour never happened.
+
+3. **The roulette was not random.** Because those first two keys almost always have
+   a unique maximum, `random()` was a third-place tiebreak that never fired. 25
+   rolls against a 9-game backlog returned Portal 2 25 times.
+
+2 and 3 are one mistake — separate sort keys instead of one score — fixed in
+migration `20260908161518_roulette_weighted_random.sql` with weighted random
+selection (Efraimidis-Spirakis: order by `random() ^ (1/weight)`). Selection
+probability is then exactly proportional to weight, so nothing is ever excluded
+while `hours` genuinely moves the odds. Weight is
+`1 + urgency * (2*resuming + 1*session_fit)`, urgency running 1 at half an hour to 0
+at four hours and beyond — a short evening tilts toward resuming and high
+`session_fit`, a long one flattens to uniform. Measured on the deployed endpoint:
+the one entry that is both `playing` and high-fit came up 24% of the time at
+`hours=0.5` against 9% at `hours=8`, and 150 rolls at 8 hours covered all 9 games.
+
+**The app must not cache a roulette response or treat it as stable** — the same
+request twice is meant to give two different games. Sola needs telling; `/roulette`
+is now `library`-tagged rather than `unreleased` in `docs/openapi.yaml`.
 
 ---
 
@@ -606,7 +651,18 @@ These are the ones that cost time if you hit them without warning.
   assume it is doing something.
 - **Free-tier Supabase pauses after 1 week of inactivity**, and judging runs to
   22 Oct. A paused backend during judging means judges open the app and it does not
-  work.
+  work. Measured 8 Sep: the database is **107 MB** of the 500 MB free cap, so size is
+  not the reason to upgrade — the idle pause is the only one.
+- **`create or replace function` restores the default PUBLIC execute grant**, and
+  `authenticated` inherits from PUBLIC, so `anon` silently regains execute on a
+  function that reads user data. Every migration that replaces one must re-issue
+  `revoke all ... from public` and `grant execute ... to authenticated`, and the
+  check is `select proacl from pg_proc where proname = ...`.
+- **Ranking with several `order by` keys is not weighting.** Scaling independent sort
+  keys by positive constants cannot change their ordering, so a "weight" applied that
+  way is inert, and a trailing `random()` only fires on exact ties. If a knob is
+  supposed to change behaviour, assert the distribution it produces — step 8 shipped
+  two bugs of exactly this shape that read fine in review.
 
 ---
 

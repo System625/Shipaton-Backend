@@ -4,8 +4,8 @@
 # on 8 September 2026, not written from the source. `npm run verify:functions`
 # re-checks the live endpoints against this contract in one command.
 #
-# Only /search and /games/{id} are deployed. /roulette, /share-resolve and
-# /share-confirm exist in supabase/functions but are NOT deployed — calling them
+# /search, /games/{id}, /games/popular and /roulette are deployed. /share-resolve
+# and /share-confirm exist in supabase/functions but are NOT deployed — calling them
 # today returns the gateway's 404 {"code":"NOT_FOUND"}. They are documented under
 # the `unreleased` tag so the shapes are agreed before they ship.
 
@@ -13,7 +13,7 @@ openapi: 3.1.0
 
 info:
   title: Shelf backend API
-  version: "2026-09-08"
+  version: "2026-09-08.2"
   description: |
     Games catalog, share ingestion and roulette for the Shelf app.
 
@@ -41,6 +41,10 @@ servers:
 tags:
   - name: catalog
     description: Live and verified against real data.
+  - name: library
+    description: >
+      Live and verified. Reads the caller's own `library_entries` rather than the
+      catalog, so what it returns depends on what that user has saved.
   - name: unreleased
     description: >
       Written and reviewed, not deployed. Shapes may still change; the deployment
@@ -296,16 +300,18 @@ paths:
 
   /roulette:
     get:
-      tags: [unreleased]
+      tags: [library]
       operationId: rouletteFromBacklog
-      summary: "Pick one game from the caller's backlog (NOT DEPLOYED)"
+      summary: "Pick one game from the caller's backlog"
       description: |
-        **Not deployed. Calling this today returns the gateway's 404
-        `{"code":"NOT_FOUND"}`.**
+        Deployed and verified 8 September 2026 (`npm run verify:roulette`).
 
         Picks from the caller's own `library_entries`, so it needs a real backlog
-        to draw from — it is not a catalog endpoint and it will keep returning
-        `null` until the app can write library rows.
+        to draw from — it is not a catalog endpoint. Entries with status `backlog`
+        or `playing` are eligible; `beaten` and `dropped` are never returned.
+        **Nothing in the app writes library rows yet** (that is `/share-confirm`,
+        still unreleased), so against a fresh account this returns `null` until
+        rows exist.
 
         Two inputs, deliberately. `hours` is how long the user has tonight; `size`
         is how big a game they are in the mood for. Total time-to-beat and session
@@ -313,8 +319,15 @@ paths:
         and never filters — filtering one on the other deals everybody the same
         three short indies forever.
 
+        **It is a genuine roulette: the same request twice will usually give two
+        different games.** Selection is weighted-random, and every eligible entry
+        keeps a non-zero chance no matter what `hours` is. A short evening tilts
+        the odds toward a game already `playing` and toward high `sessionFit`; from
+        four hours upward the weights flatten and the pick is uniform. Do not cache
+        the response or treat it as stable — re-request to re-roll.
+
         `null` is a real answer meaning the backlog is empty on that platform. It
-        should never mean "the filters excluded everything".
+        never means "the filters excluded everything".
       parameters:
         - name: platform
           in: query
@@ -322,8 +335,10 @@ paths:
           schema: { type: integer }
           description: >
             Platform id, as in `PlatformRef.id` (167 = PS5, 130 = Switch, 6 = PC).
-            Note the current handler coerces a missing value to 0 rather than
-            rejecting it, which yields `null`; send it explicitly.
+            Filters on where the game is playable, not on what the user tagged.
+            Missing, empty or non-integer values are a 400 — earlier builds coerced
+            a missing value to 0 and answered `null`, which was indistinguishable
+            from an empty backlog.
           example: 167
         - name: size
           in: query
@@ -337,23 +352,58 @@ paths:
           required: false
           schema: { type: number, default: 2 }
           description: >
-            Hours free tonight. Reweights the pick; never excludes a game.
-            Unparseable values fall back to 2.
+            Hours free tonight. Shifts the odds; never excludes a game. Below four
+            hours the pick tilts increasingly toward resuming a game already
+            `playing` and toward high `sessionFit`; at four or more it is uniform
+            over the eligible backlog. Unparseable, zero and negative values fall
+            back to 2.
       responses:
         "200":
-          description: One game, or `null` when the backlog is empty on that platform.
+          description: >
+            One game, or `null` when the backlog is empty on that platform. A
+            different game on each request.
           content:
             application/json:
               schema:
                 oneOf:
                   - { $ref: "#/components/schemas/CatalogGame" }
                   - { type: "null" }
+              examples:
+                rolled:
+                  summary: A roll against a PS5 backlog
+                  value:
+                    id: 69b228a0-0452-4b69-a0a9-c9a0237da5d3
+                    title: "The Witcher 3: Wild Hunt"
+                    slug: the-witcher-3-wild-hunt
+                    platforms:
+                      - { id: 130, name: Nintendo Switch, slug: switch }
+                      - { id: 6, name: PC (Microsoft Windows), slug: win }
+                      - { id: 48, name: PlayStation 4, slug: ps4--1 }
+                      - { id: 167, name: PlayStation 5, slug: ps5 }
+                      - { id: 49, name: Xbox One, slug: xboxone }
+                      - { id: 169, name: Xbox Series X|S, slug: series-x-s }
+                    releaseDate: "2015-05-19"
+                    genres: ["Role-playing (RPG)", "Adventure"]
+                    coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/coaarl.jpg
+                    timeToBeatHours: 70.8
+                    sessionFit: low
+                    criticScore: 92
+                    abbreviation: W3W
+                    colorKey: green
+                empty:
+                  summary: Nothing in the backlog on that platform
+                  value: null
         "400":
-          description: '`size` was not quick, medium or epic.'
+          description: >
+            `platform` was missing, empty or not an integer, or `size` was not
+            quick, medium or epic.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FunctionError" }
-              example: { error: size must be quick, medium or epic }
+              examples:
+                missingPlatform: { value: { error: platform is required } }
+                badPlatform: { value: { error: platform must be an integer platform id } }
+                badSize: { value: { error: size must be quick, medium or epic } }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "500": { $ref: "#/components/responses/ServerError" }

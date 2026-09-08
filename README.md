@@ -63,13 +63,19 @@ into deployed functions automatically; they only need to be in `.env` for
 All authenticated. All return `CatalogGame` as defined in
 `supabase/functions/_shared/catalog-game.ts`.
 
-| Method | Path | Returns |
-|---|---|---|
-| `GET`  | `/search?q=` | `CatalogGame[]` |
-| `GET`  | `/games/:id` | `CatalogGame` |
-| `POST` | `/share-resolve` `{url}` | `{intakeId, extractedText, candidates[]}` |
-| `POST` | `/share-confirm` `{intakeId, gameId}` | `LibraryEntry` |
-| `GET`  | `/roulette?platform=&hours=&size=` | `CatalogGame \| null` |
+| Method | Path | Returns | |
+|---|---|---|---|
+| `GET`  | `/search?q=` | `CatalogGame[]` | deployed |
+| `GET`  | `/games/:id` | `CatalogGame` | deployed |
+| `GET`  | `/games/popular?limit=&offset=` | `CatalogGame[]` | deployed |
+| `GET`  | `/roulette?platform=&hours=&size=` | `CatalogGame \| null` | deployed |
+| `POST` | `/share-resolve` `{url}` | `{intakeId, extractedText, candidates[]}` | not deployed |
+| `POST` | `/share-confirm` `{intakeId, gameId}` | `LibraryEntry` | not deployed |
+
+`docs/openapi.yaml` is the full contract. `/roulette` reads the caller's own
+`library_entries`, so it answers `null` until something writes library rows — and it
+is genuinely random, so the same request twice gives two different games. Do not
+cache it.
 
 ## Things that will bite you
 
