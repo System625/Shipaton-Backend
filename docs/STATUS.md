@@ -11,11 +11,10 @@ the vendor's own documentation on 4 Sep, so don't redo that research.
 
 ## The one-paragraph version
 
-**The Supabase half is done and verified against the real project.** All eight
+**The Supabase half is done and verified against the real project.** All ten
 migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer matches the spec's
 worked example exactly, search and roulette were exercised against seeded rows, and
-RLS was confirmed to isolate two real accounts — read *and* write. The catalog is
-deliberately empty again: the rows used to prove it were removed afterwards.
+RLS was confirmed to isolate two real accounts — read *and* write.
 
 **The Twitch blocker is gone and the catalog is seeded.** 7 Sep: a Twitch account
 created abroad (Nigerian numbers are still rejected by Twitch's 2FA — the workaround

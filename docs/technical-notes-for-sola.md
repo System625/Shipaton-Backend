@@ -182,10 +182,33 @@ swatch three characters may be tight. Say the word and I will cap it at two.
 
 For the Google and Apple sign-in setup, none of which is written down anywhere:
 
-- iOS bundle identifier
-- Android package name
-- Android signing SHA-1 fingerprint (Google cannot create the Android OAuth client without it)
+- ~~Android package name~~ — got it, 8 Sep: `com.nathanakin.revenuecatgame`
+- ~~Android signing SHA-1 fingerprint~~ — got it, 8 Sep, from `android/app/debug.keystore`
+- iOS bundle identifier — Josh says use a placeholder, which is fine for now
 - the deep link scheme you want
+
+**Two things about what you sent, both worth acting on before 30 Sep.** Details in
+`docs/auth-setup.md`; the short version:
+
+**The package name is still the scaffold's.** `com.nathanakin.revenuecatgame` is
+someone else's namespace naming a different app — it came in with whatever RevenueCat
+sample the project started from. It cannot be changed after the first Play Store
+upload; Google treats a changed application ID as a brand new app, so you lose the
+listing, installs and reviews. Right now it is one line in `app.json`. Could you pick
+a real one — `com.shelfapp.shelf`, or the reverse of whatever domain Josh registers —
+and use the **same namespace for the iOS bundle ID**? That way Josh registers the
+Apple App ID once instead of twice, and the Google OAuth clients get created once.
+This is the reason it is worth doing this week rather than at the end.
+
+**That SHA-1 is the debug one, and it is a shared public value.** It is the
+checked-in React Native template `debug.keystore` (`CN=Android Debug`, serial
+`232eae62`) — identical in every project built from that template, not unique to you.
+Perfectly fine for the dev OAuth client, and it unblocks you today. But the release
+build has a *different* fingerprint, and if the Play listing uses Play App Signing
+(the default), the one Google has to trust is the app signing certificate that only
+appears in Play Console after the first upload. Both go on the same Android OAuth
+client. Worth knowing now so that "Google sign-in works on my machine but not in the
+release build" isn't a surprise during review week.
 
 **And one product decision, worth settling before you build the sign-in screen.**
 Supabase only links a second sign-in method to an existing account when the email

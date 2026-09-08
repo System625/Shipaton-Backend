@@ -1,0 +1,626 @@
+# Shelf backend HTTP API.
+#
+# Every response body and status code below was captured from the deployed project
+# on 8 September 2026, not written from the source. `npm run verify:functions`
+# re-checks the live endpoints against this contract in one command.
+#
+# Only /search and /games/{id} are deployed. /roulette, /share-resolve and
+# /share-confirm exist in supabase/functions but are NOT deployed — calling them
+# today returns the gateway's 404 {"code":"NOT_FOUND"}. They are documented under
+# the `unreleased` tag so the shapes are agreed before they ship.
+
+openapi: 3.1.0
+
+info:
+  title: Shelf backend API
+  version: "2026-09-08"
+  description: |
+    Games catalog, share ingestion and roulette for the Shelf app.
+
+    Supabase Edge Functions over a Postgres catalog of 89,117 games seeded from IGDB.
+
+    **Authentication is required on every endpoint.** There is no public read.
+    The caller sends a Supabase user access token; the function rebuilds a Supabase
+    client from that exact token, so row-level security applies to everything it
+    touches. No endpoint ever uses the service role key to read user data.
+
+    **Two different error shapes.** Requests that fail the platform's JWT check are
+    rejected by the Supabase edge gateway before the function runs, and it answers
+    `{"code","message"}`. Errors the function itself raises answer `{"error"}`.
+    Handle both — see the `Error` schemas.
+
+    **IGDB attribution is contractually required** wherever this data is shown to a
+    user: a visible, static credit to IGDB.com. `criticScore` is IGDB's own
+    aggregate of external critic scores; it is not Metacritic and must not be
+    labelled as such.
+
+servers:
+  - url: https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1
+    description: Production (the only environment; there is no staging project)
+
+tags:
+  - name: catalog
+    description: Live and verified against real data.
+  - name: unreleased
+    description: >
+      Written and reviewed, not deployed. Shapes may still change; the deployment
+      is what makes them real.
+
+security:
+  - userToken: []
+
+paths:
+  /search:
+    get:
+      tags: [catalog]
+      operationId: searchGames
+      summary: Search the games catalog
+      description: |
+        Ranked full-text search over titles and alternative titles, so `botw`,
+        `gta v` and `bg3` resolve to the right game.
+
+        Reads the local catalog first. If the best local match scores below 0.55
+        the function makes one live IGDB lookup, ingests anything new and searches
+        again; a failure in that path is logged and swallowed, and the local
+        results are served anyway. So this endpoint does not return 502 when IGDB
+        is down — it returns the catalog's best effort.
+
+        Results are ranked, not filtered. A close-but-wrong title can outrank the
+        one the user meant on short queries, which is why the share flow makes the
+        user confirm.
+
+        Never returns 404. No match is `200 []`.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            The query. Trimmed. Fewer than 2 characters (including missing or
+            empty) short-circuits to `200 []` without touching the database.
+          examples:
+            title:   { value: elden ring }
+            abbrev:  { value: botw }
+            tooShort: { value: e, summary: "Returns [] — under the 2-character floor" }
+      responses:
+        "200":
+          description: >
+            Up to 10 matches, best first. An empty array is a normal, successful
+            answer, not an error.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 10
+                items: { $ref: "#/components/schemas/CatalogGame" }
+              examples:
+                eldenRing:
+                  summary: q=elden ring (first 2 of 10, captured 8 Sep 2026)
+                  value:
+                    - id: fc9cd9c2-aa68-42c0-9226-33cf6c4bcdef
+                      title: Elden Ring
+                      slug: elden-ring
+                      platforms:
+                        - { id: 508, name: Nintendo Switch 2, slug: switch-2 }
+                        - { id: 6, name: PC (Microsoft Windows), slug: win }
+                        - { id: 48, name: PlayStation 4, slug: ps4--1 }
+                        - { id: 167, name: PlayStation 5, slug: ps5 }
+                        - { id: 49, name: Xbox One, slug: xboxone }
+                        - { id: 169, name: Xbox Series X|S, slug: series-x-s }
+                      releaseDate: "2022-02-25"
+                      genres: [Role-playing (RPG), Adventure]
+                      coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co4jni.jpg
+                      timeToBeatHours: 119.4
+                      sessionFit: low
+                      criticScore: 97
+                      abbreviation: ER
+                      colorKey: red
+                    - id: c0fe5da2-0b39-4587-9dfa-5320c5b46a3a
+                      title: Elder Ring
+                      slug: elder-ring
+                      platforms:
+                        - { id: 6, name: PC (Microsoft Windows), slug: win }
+                      releaseDate: "2025-05-22"
+                      genres: [Role-playing (RPG), Adventure, Indie]
+                      coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/coa9qd.jpg
+                      sessionFit: low
+                      abbreviation: ER
+                      colorKey: teal
+                empty:
+                  summary: q under 2 characters, or nothing matched
+                  value: []
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+    options:
+      tags: [catalog]
+      operationId: searchPreflight
+      summary: CORS preflight
+      security: []
+      responses:
+        "200":
+          description: 'Body is the literal string `ok`. Allows any origin.'
+          content:
+            text/plain:
+              schema: { type: string, const: ok }
+
+  /games/{id}:
+    get:
+      tags: [catalog]
+      operationId: getGame
+      summary: Fetch one game by id
+      description: |
+        The function is deployed under the slug `games`, so the real path is
+        `/functions/v1/games/<uuid>` — the id is the last path segment, not a
+        query parameter.
+
+        Only a uuid is accepted. `slug` is returned on every game and is safe to
+        put in a share link, but this endpoint will not look a game up by it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: The game's uuid, as returned in `CatalogGame.id`.
+          example: fc9cd9c2-aa68-42c0-9226-33cf6c4bcdef
+      responses:
+        "200":
+          description: The game.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogGame" }
+              example:
+                id: fc9cd9c2-aa68-42c0-9226-33cf6c4bcdef
+                title: Elden Ring
+                slug: elden-ring
+                platforms:
+                  - { id: 6, name: PC (Microsoft Windows), slug: win }
+                  - { id: 48, name: PlayStation 4, slug: ps4--1 }
+                  - { id: 49, name: Xbox One, slug: xboxone }
+                  - { id: 167, name: PlayStation 5, slug: ps5 }
+                  - { id: 169, name: Xbox Series X|S, slug: series-x-s }
+                  - { id: 508, name: Nintendo Switch 2, slug: switch-2 }
+                releaseDate: "2022-02-25"
+                genres: [Role-playing (RPG), Adventure]
+                coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co4jni.jpg
+                timeToBeatHours: 119.4
+                sessionFit: low
+                criticScore: 97
+                abbreviation: ER
+                colorKey: red
+        "400":
+          description: >
+            The last path segment is not a uuid. `/games` with no id gives this
+            too, not a 404.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: "expected /games/<uuid>" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Well-formed uuid, no such game.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: game not found }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /roulette:
+    get:
+      tags: [unreleased]
+      operationId: rouletteFromBacklog
+      summary: "Pick one game from the caller's backlog (NOT DEPLOYED)"
+      description: |
+        **Not deployed. Calling this today returns the gateway's 404
+        `{"code":"NOT_FOUND"}`.**
+
+        Picks from the caller's own `library_entries`, so it needs a real backlog
+        to draw from — it is not a catalog endpoint and it will keep returning
+        `null` until the app can write library rows.
+
+        Two inputs, deliberately. `hours` is how long the user has tonight; `size`
+        is how big a game they are in the mood for. Total time-to-beat and session
+        length are different quantities on different scales, so `hours` reweights
+        and never filters — filtering one on the other deals everybody the same
+        three short indies forever.
+
+        `null` is a real answer meaning the backlog is empty on that platform. It
+        should never mean "the filters excluded everything".
+      parameters:
+        - name: platform
+          in: query
+          required: true
+          schema: { type: integer }
+          description: >
+            Platform id, as in `PlatformRef.id` (167 = PS5, 130 = Switch, 6 = PC).
+            Note the current handler coerces a missing value to 0 rather than
+            rejecting it, which yields `null`; send it explicitly.
+          example: 167
+        - name: size
+          in: query
+          required: false
+          schema: { type: string, enum: [quick, medium, epic] }
+          description: >
+            Total length bucket — quick under 10h, medium 10-30h, epic over 30h.
+            Omit for any size. Any other value is a 400.
+        - name: hours
+          in: query
+          required: false
+          schema: { type: number, default: 2 }
+          description: >
+            Hours free tonight. Reweights the pick; never excludes a game.
+            Unparseable values fall back to 2.
+      responses:
+        "200":
+          description: One game, or `null` when the backlog is empty on that platform.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/CatalogGame" }
+                  - { type: "null" }
+        "400":
+          description: '`size` was not quick, medium or epic.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: size must be quick, medium or epic }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /share-resolve:
+    post:
+      tags: [unreleased]
+      operationId: resolveShare
+      summary: "Turn a shared TikTok/YouTube link into game candidates (NOT DEPLOYED)"
+      description: |
+        **Not deployed. Calling this today returns the gateway's 404
+        `{"code":"NOT_FOUND"}`.** Note the path is `share-resolve`, matching the
+        function directory — not `/share/resolve` as some source comments say.
+
+        A `share_intake` row is written the instant the share arrives, before any
+        matching is attempted. If resolution then fails, the link is still saved
+        and the user can come back to it. Nothing a user shares is ever silently
+        dropped — which is why this returns 200 with an empty `candidates` list
+        rather than an error when it cannot work out the game.
+
+        oEmbed quality varies wildly by provider. YouTube gives a clean title;
+        TikTok gives the whole caption, hashtags and emoji included, so the text
+        is cleaned into several candidate terms and each is tried in turn.
+
+        This endpoint never writes to the user's library. `confident: true` means
+        "show this one large", not "add it".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  description: The shared link, exactly as received from the share sheet.
+              example: { url: "https://www.youtube.com/watch?v=E3Huy2cdih0" }
+      responses:
+        "200":
+          description: >
+            Resolution finished. `candidates` may be empty; the intake row exists
+            either way.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShareResolution" }
+        "400":
+          description: Body was not JSON, or `url` was missing or not a string.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: "expected JSON body {url}" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500":
+          description: The intake row could not be written. Nothing was saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+
+  /share-confirm:
+    post:
+      tags: [unreleased]
+      operationId: confirmShare
+      summary: "Commit the user's pick to their library (NOT DEPLOYED)"
+      description: |
+        **Not deployed. Calling this today returns the gateway's 404
+        `{"code":"NOT_FOUND"}`.**
+
+        The user has tapped a game on the confirm screen. This is the only path
+        that writes a shared game into a library, and `source_url` travels with
+        it — that field is the differentiator, and what later makes the finish
+        card interesting: "found on TikTok in March, beaten in September" beats a
+        bare rating.
+
+        Idempotent per (user, game): a repeat confirm upserts the same row rather
+        than erroring or duplicating. `source_kind` is derived from the intake's
+        provider, not sent by the client.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intakeId, gameId]
+              properties:
+                intakeId:
+                  type: string
+                  format: uuid
+                  description: From the `share-resolve` response.
+                gameId:
+                  type: string
+                  format: uuid
+                  description: The `CatalogGame.id` the user picked.
+      responses:
+        "200":
+          description: The library row, as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryEntry" }
+        "400":
+          description: Body was not JSON, or a field was missing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: intakeId and gameId are required }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: >
+            No such intake for this user. RLS already scopes the lookup to the
+            caller, so another user's intake id is a 404, not a 403.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: intake not found }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Supabase **user** access token: `Authorization: Bearer <session.access_token>`.
+
+        `supabase.functions.invoke()` attaches it for you. With plain `fetch` you
+        must set it yourself. The `apikey: <anon key>` header is optional when a
+        user token is present (verified: the call succeeds without it) and
+        harmless to send.
+
+        The anon key is not a substitute for a session. Sending it as the bearer
+        passes the gateway's signature check and then fails inside the function
+        with `401 {"error":"invalid or expired token"}`, because it carries no user.
+
+  responses:
+    Unauthorized:
+      description: |
+        No session, or a bad one. **Two shapes, from two layers:**
+
+        * Missing or malformed `Authorization` — the Supabase edge gateway rejects
+          it before the function runs: `{"code":"UNAUTHORIZED_NO_AUTH_HEADER",
+          "message":"Missing authorization header"}`, or
+          `UNAUTHORIZED_INVALID_JWT_FORMAT` / `"Invalid JWT"`.
+        * A well-formed token that resolves to no user (an expired session, or the
+          anon key used as a bearer) — the function answers
+          `{"error":"invalid or expired token"}`.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - { $ref: "#/components/schemas/GatewayError" }
+              - { $ref: "#/components/schemas/FunctionError" }
+          examples:
+            noHeader:
+              summary: No Authorization header (gateway)
+              value: { code: UNAUTHORIZED_NO_AUTH_HEADER, message: Missing authorization header }
+            malformed:
+              summary: Not a JWT (gateway)
+              value: { code: UNAUTHORIZED_INVALID_JWT_FORMAT, message: Invalid JWT }
+            noUser:
+              summary: Valid signature, no user — e.g. the anon key as bearer (function)
+              value: { error: invalid or expired token }
+    MethodNotAllowed:
+      description: Wrong HTTP verb for this endpoint.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/FunctionError" }
+          example: { error: method not allowed }
+    ServerError:
+      description: A database or Postgres function error, passed through.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/FunctionError" }
+
+  schemas:
+    GatewayError:
+      type: object
+      description: Raised by the Supabase edge gateway, before the function runs.
+      required: [code, message]
+      properties:
+        code: { type: string, example: UNAUTHORIZED_NO_AUTH_HEADER }
+        message: { type: string, example: Missing authorization header }
+    FunctionError:
+      type: object
+      description: Raised by the function itself. Always exactly this one key.
+      required: [error]
+      properties:
+        error: { type: string }
+
+    PlatformRef:
+      type: object
+      description: >
+        A platform the game is available on. IGDB's own ids and slugs, stable
+        across the catalog.
+      required: [id, name, slug]
+      properties:
+        id: { type: integer, example: 167 }
+        name: { type: string, example: PlayStation 5 }
+        slug: { type: string, example: ps5 }
+
+    CatalogGame:
+      type: object
+      description: |
+        The one shape every catalog endpoint returns. Search results and the
+        detail endpoint are the same object — there is no thin/fat variant to
+        branch on, and no second fetch needed to render a detail screen from a
+        search result.
+
+        **Optional fields are genuinely often absent.** Only about 5% of games
+        carry a time to beat, so treat `timeToBeatHours` as usually missing.
+      required: [id, title, platforms, genres, abbreviation, colorKey]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Ours, not IGDB's. The key for everything; `library_entries.game_id` points at it.
+        title: { type: string }
+        slug:
+          type: string
+          description: >
+            IGDB's slug. Stable and human-readable, so share links can use it
+            instead of the uuid. Present on effectively every row, but typed
+            optional because the column is nullable.
+        platforms:
+          type: array
+          items: { $ref: "#/components/schemas/PlatformRef" }
+          description: >
+            Availability — what the game runs on, not what the user owns. Can be
+            empty. **Order is not part of the contract and differs by endpoint:**
+            /search returns them sorted by name, /games/{id} by platform id. Sort
+            client-side if the order matters visually.
+        releaseDate:
+          type: string
+          format: date
+          description: >
+            `YYYY-MM-DD`. Absent for plenty of games, and a date here does not mean
+            unreleased — past and future dates both come through. Compare against
+            today before treating one as an upcoming release.
+        genres:
+          type: array
+          items: { type: string }
+          description: IGDB's labels, verbatim, e.g. `Role-playing (RPG)`. Can be empty.
+        coverImageUrl:
+          type: string
+          format: uri
+          description: >
+            IGDB box art at the `t_cover_big_2x` size, 528x748. Real cover art
+            fails to load more often than you would expect, which is what
+            `abbreviation` and `colorKey` are for.
+        timeToBeatHours:
+          type: number
+          description: >
+            IGDB's "normally" completion estimate, in hours. Total playtime, not
+            session length — do not filter a "1 hour tonight" input on it.
+            Present on roughly 5% of the catalog.
+        sessionFit:
+          type: string
+          enum: [high, medium, low]
+          description: >
+            Does this work in a short evening? Derived from genres, game modes and
+            keywords — deliberately not from time to beat. Balatro's total playtime
+            is effectively unbounded and it is the best 45-minute game there is.
+            A first-cut heuristic, to be revisited once the roulette has real use.
+        criticScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >
+            IGDB's aggregate of external critic scores. **Not Metacritic** — do not
+            label it as such in the UI.
+        abbreviation:
+          type: string
+          minLength: 2
+          maxLength: 3
+          description: >
+            Two or three letters for the coloured swatch shown when cover art
+            fails. Derived server-side so the fallback is identical on every
+            device. Up to three initials, so *Return of the Obra Dinn* is `ROD`.
+          example: ER
+        colorKey:
+          type: string
+          enum: [teal, orange, purple, pink, gold, navy, red, green, blue, slate]
+          description: >
+            The swatch colour, stable per title across sessions and devices. These
+            keys are the app's own `CoverColorKey` union, resolved in
+            `src/shared/theme/theme.ts`. `GameCover.tsx` silently falls back to
+            `slate` for an unknown key, so a rename on either side goes unnoticed
+            — if a colour changes in theme.ts, say so and this list changes with it.
+          example: red
+
+    ShareResolution:
+      type: object
+      required: [intakeId, provider, extractedText, confident, candidates]
+      properties:
+        intakeId:
+          type: string
+          format: uuid
+          description: Pass this back to /share-confirm. The row exists even when nothing matched.
+        provider:
+          type: string
+          enum: [tiktok, youtube, other]
+          nullable: true
+        extractedText:
+          type: string
+          nullable: true
+          description: >
+            The oEmbed title the match was attempted from. Null if oEmbed failed
+            or the provider gave nothing. Useful to show as "we read this from
+            your link".
+        confident:
+          type: boolean
+          description: >
+            The top candidate scored at or above 0.55. Show it large. It is still
+            a suggestion — the confirm step is never skipped, because silently
+            adding the wrong game to someone's backlog kills trust in the one
+            feature that makes this app different.
+        candidates:
+          type: array
+          maxItems: 5
+          items: { $ref: "#/components/schemas/CatalogGame" }
+          description: >
+            Best first, scoring 0.30 or better. Empty means unmatched — show the
+            search box, and the link is still saved. DLC, expansions, bundles and
+            special editions are filtered out at ingest, so these are genuinely
+            different games rather than five versions of one.
+
+    LibraryEntry:
+      type: object
+      description: A row of `library_entries`, returned by /share-confirm exactly as stored (snake_case).
+      required: [id, user_id, game_id, status, notes, added_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        game_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [playing, backlog, beaten, dropped]
+          description: Always `backlog` when created by /share-confirm.
+        rating: { type: integer, minimum: 1, maximum: 10, nullable: true }
+        notes: { type: string, default: "" }
+        hours_played: { type: number, nullable: true }
+        platform_id:
+          type: integer
+          nullable: true
+          description: What they play it on — not availability.
+        source_url:
+          type: string
+          nullable: true
+          description: The TikTok or YouTube link the game came from.
+        source_kind:
+          type: string
+          enum: [tiktok, youtube, search, manual]
+          nullable: true
+          description: Derived from the intake's provider; anything not tiktok/youtube becomes `manual`.
+        added_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
