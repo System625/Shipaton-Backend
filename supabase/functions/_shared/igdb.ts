@@ -85,6 +85,10 @@ export type IgdbGame = {
   genres?: { name: string }[];
   platforms?: number[];
   aggregated_rating?: number; // 0-100, external critic aggregate. NOT Metacritic.
+  // IGDB's count of USER ratings. OMITTED, not zero, when a game has none -- so
+  // `?? 0` is the correct read and `total_rating_count == null` never means
+  // "unpopular" here, only "IGDB did not say".
+  total_rating_count?: number;
   game_modes?: { name: string }[];
   keywords?: { name: string }[];
   game_type?: number; // 0 = main_game
@@ -123,7 +127,8 @@ export type IgdbPlatform = {
 // during the seed. Requesting the field costs nothing now and a full re-seed later.
 export const GAME_FIELDS =
   "fields name, slug, first_release_date, cover.image_id, genres.name, platforms, " +
-  "aggregated_rating, game_modes.name, keywords.name, game_type, parent_game, " +
+  "aggregated_rating, total_rating_count, game_modes.name, keywords.name, " +
+  "game_type, parent_game, " +
   "version_parent, alternative_names.name;";
 
 /**
@@ -176,9 +181,10 @@ export function seedPageQuery(afterId: number, releasedSinceUnix: number, limit 
  * Cyberpunk 2077, Breath of the Wild, RDR2, Hollow Knight or Stardew Valley — every
  * worked example in the spec, and every abbreviation case in STATUS §3b but `bg3`.
  *
- * `total_rating_count` is IGDB's count of user ratings, filtered on but not stored:
- * it decides what enters the catalog, nothing downstream reads it. Thresholds
- * measured 7 Sep, rows added on top of the window's 75,559:
+ * `total_rating_count` is IGDB's count of user ratings. It decides what enters the
+ * catalog here, and since 8 Sep it is also STORED on games and read by /games/popular
+ * and by search ranking -- see migration 20260908153445_game_popularity.sql.
+ * Thresholds measured 7 Sep, rows added on top of the window's 75,559:
  * >=5 -> 13,558   >=20 -> 5,439   >=50 -> 2,694   >=100 -> 1,568.
  *
  * The date ranges are deliberately disjoint (`<` here, `>=` above), so the two

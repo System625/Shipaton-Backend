@@ -26,6 +26,7 @@ export type GameUpsert = {
   cover_url: string | null;
   genres: string[];
   critic_score: number | null;
+  total_rating_count: number;
   igdb_game_type: number | null;
   ttb_hastily_hours: number | null;
   ttb_normally_hours: number | null;
@@ -80,6 +81,14 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
     // aggregated_rating is IGDB's aggregate of external critic scores, 0-100.
     // It is NOT Metacritic and must not be labelled as such in the UI.
     critic_score: game.aggregated_rating == null ? null : Math.round(game.aggregated_rating),
+    // Count of USER ratings, and a different quantity from critic_score above: a
+    // game can be widely played and mediocre, or acclaimed and obscure.
+    //
+    // IGDB omits this field rather than returning 0, so `?? 0` is not defensive
+    // padding -- it is the only way a game with no ratings gets a number at all.
+    // The column stays nullable so that NULL keeps meaning "never fetched"; every
+    // row this mapper touches was fetched, so it always writes a real count.
+    total_rating_count: game.total_rating_count ?? 0,
     igdb_game_type: game.game_type ?? null,
     ttb_hastily_hours: secondsToHours(ttb?.hastily),
     ttb_normally_hours: ttbNormally,

@@ -10,6 +10,7 @@
     "seed:platforms": "tsx scripts/seed-platforms.ts",
     "seed:games": "tsx scripts/seed-games.ts",
     "seed": "npm run seed:platforms && npm run seed:games",
+    "backfill:ratings": "tsx scripts/backfill-rating-counts.ts",
     "verify:igdb": "tsx scripts/verify-igdb.ts",
     "smoke:oembed": "tsx scripts/smoke-oembed.ts",
     "functions:serve": "supabase functions serve --env-file .env",

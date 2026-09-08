@@ -128,6 +128,49 @@ async function main() {
     check("an unknown uuid is 404", missing.status === 404, `HTTP ${missing.status}`);
     const detailNoAuth = await call(`/games/${target.id}`);
     check("/games requires auth too", detailNoAuth.status === 401, `HTTP ${detailNoAuth.status}`);
+
+    // ---- 4. /games/popular ----
+    console.log("\n4. /games/popular");
+    const popNoAuth = await call("/games/popular");
+    check("popular requires auth", popNoAuth.status === 401, `HTTP ${popNoAuth.status}`);
+
+    const popular = await call("/games/popular", token);
+    check("authenticated popular returns 200", popular.status === 200, `HTTP ${popular.status}`);
+    const top = popular.body as CatalogGame[];
+    check("returns the default page of 20", Array.isArray(top) && top.length === 20,
+      `${top?.length} results`);
+    if (top?.length) checkShape("popular", top[0]);
+
+    // Ordering is by IGDB user-rating count, which the response deliberately does not
+    // expose (CatalogGame has no popularity field). So assert the property that
+    // actually matters to the app: the front of the list is famous, not shovelware.
+    // These eight are the most-rated games in the catalog; requiring 5 of 8 leaves
+    // room for IGDB's counts to shuffle without turning this into a brittle test.
+    const HEAVYWEIGHTS = [
+      "Grand Theft Auto V", "The Witcher 3: Wild Hunt", "Portal 2",
+      "The Elder Scrolls V: Skyrim", "Red Dead Redemption 2", "God of War",
+      "The Last of Us", "Half-Life 2",
+    ];
+    const hits = HEAVYWEIGHTS.filter((t) => top?.some((g) => g.title === t)).length;
+    check("the top 20 is dominated by well-known games", hits >= 5, `${hits}/8 present`);
+
+    const limited = await call("/games/popular?limit=5", token);
+    check("limit is honoured", (limited.body as CatalogGame[])?.length === 5);
+
+    // Ties are broken by id in SQL precisely so paging cannot drop or repeat rows.
+    const pageOne = (await call("/games/popular?limit=5&offset=0", token)).body as CatalogGame[];
+    const pageTwo = (await call("/games/popular?limit=5&offset=5", token)).body as CatalogGame[];
+    const overlap = pageOne?.filter((g) => pageTwo?.some((h) => h.id === g.id)) ?? [];
+    check("paging does not repeat rows", overlap.length === 0, `${overlap.length} duplicated`);
+    check("page one matches the unpaged head",
+      pageOne?.every((g, i) => g.id === top[i].id) === true);
+
+    const overCap = await call("/games/popular?limit=1000", token);
+    check("limit is capped at 100", (overCap.body as CatalogGame[])?.length === 100,
+      `${(overCap.body as CatalogGame[])?.length} returned`);
+    const junk = await call("/games/popular?limit=abc&offset=-4", token);
+    check("unparseable paging params fall back to defaults",
+      (junk.body as CatalogGame[])?.length === 20);
   } finally {
     await admin.auth.admin.deleteUser(created.user!.id);
     console.log("\ncleaned up test user.");
