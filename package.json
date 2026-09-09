@@ -20,7 +20,8 @@
     "verify:functions": "tsx scripts/verify-functions.ts",
     "verify:roulette": "tsx scripts/verify-roulette.ts",
     "verify:share": "tsx scripts/verify-share.ts",
-    "measure:share": "tsx scripts/measure-share-hitrate.ts"
+    "measure:share": "tsx scripts/measure-share-hitrate.ts",
+    "verify:social": "tsx scripts/verify-social.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

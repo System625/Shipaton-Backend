@@ -733,6 +733,69 @@ is now `library`-tagged rather than `unreleased` in `docs/openapi.yaml`.
 
 ---
 
+### 9. Friends feed — **backend DONE 9 Sep. App side is mock data.**
+
+Not in the spec, and there was no backend of any kind: the whole Friends tab is
+`FRIEND_POSTS`, a three-item constant in the app's `LibraryScreen.tsx`, there purely so
+the design is not an empty tab. Built from Sola's 8 Sep handoff plus the Figma
+"Friends" screens. `npm run verify:social` re-checks it: 45 checks, all passing,
+creating three real accounts and mostly trying to read rows it should not be allowed to.
+
+**Follow, not friendship — decided 9 Sep with the built UI in hand.** The tab already
+renders follower/following counts, which assume asymmetry, and a request/accept step
+would need two devices to demo. A follows B needs nothing from B; the pair is the
+primary key, so a double-follow is a no-op rather than a second row.
+
+**Authored posts, not derived activity.** Sola's handoff asked for "started/finished/
+rated a game" events, but the design shows people writing sentences — a body, an
+optional link, an optional image, like/comment/share. Deriving events was considered
+and cut: it would have meant opening `library_entries` to other accounts, which is
+exactly the line below.
+
+**The privacy line, drawn on purpose.** This is the first migration where one user's
+rows are readable by another, so it is written down rather than inferred:
+
+| Public to any signed-in user | Still strictly owner-only |
+|---|---|
+| `profiles`, `follows`, `posts`, `post_likes`, `post_comments` | `library_entries`, `share_intake` |
+
+A shelf is not a feed. Nothing exposes what someone has in their library, what they
+shared, or what the roulette rolled them. Section 9 of `verify:social` exists solely to
+prove that did not widen — a follower reading the library of the person they follow
+must come back with zero rows, and does.
+
+**Three things nobody asked for, because UGC does not ship without them.** App Store
+guideline 1.2 wants a block, a report, and content removal before a user-generated
+content app goes live. So: `user_blocks` enforced *in the policies* rather than the UI
+(a blocked person cannot read the post, cannot comment, and cannot see the block list —
+so they cannot tell), `content_reports`, and post authors may delete comments on their
+own posts. Roughly thirty lines of policy now against a retrofit in launch week.
+
+**The block check leaked, and the advisor caught it within a minute of applying.**
+`shelf_blocked_between` has to be SECURITY DEFINER — it must see blocks in both
+directions while the policy on `user_blocks` deliberately shows a caller only their own
+— and everything in `public` is reachable at `/rest/v1/rpc/`. So any signed-in account
+could ask whether two *other* people had blocked each other. SECURITY INVOKER breaks it
+(under RLS "did they block me?" always answers false) and revoking EXECUTE breaks it
+too (a policy expression is evaluated as the querying role). It now lives in a `private`
+schema, which PostgREST does not expose: migration `20260908214500`. **Run
+`get_advisors` after any migration that adds a SECURITY DEFINER function.**
+
+**One architectural departure, deliberate.** These are PostgREST tables under RLS plus
+two read functions (`shelf_feed`, `shelf_profile_stats`), not an edge function per verb
+— six deploys carrying no logic. It moves the entire security surface into the policies,
+which is why most of `verify:social` is attempts to read and write other people's rows.
+
+**What the app still needs to do:** write a `profiles` row on first sign-in. The mock
+renders name, handle and avatar colour from constants; nothing in the app writes a
+profile today, so the feed renders empty until that exists.
+
+**Also unresolved: the product has three names.** The backend, spec and every document
+say Shelf, `app.json` says Prysm, and the Figma screens say SHIPALOT. Three weeks from
+launch, before store listings are written.
+
+---
+
 ## Traps
 
 These are the ones that cost time if you hit them without warning.
@@ -781,6 +844,13 @@ These are the ones that cost time if you hit them without warning.
   a hashtag names exactly can sit below three fuzzier rows, and noise tags
   (`#gameplay`, `#shorts`, `#playstation`) manufacture those blockers on almost
   every real caption. Ask the stronger question of the whole list.
+- **A SECURITY DEFINER function in `public` is a public API.** Everything in that
+  schema answers at `/rest/v1/rpc/`, so a definer function that takes ids as arguments
+  will answer questions about rows the caller cannot read — which is the whole point of
+  definer, and the whole problem. Put it in the `private` schema (created 9 Sep,
+  `usage` granted to `authenticated` and `service_role` only): still callable from
+  inside an RLS policy, unreachable over HTTP. `get_advisors` catches this immediately;
+  run it after any migration that adds one.
 - **The Supabase MCP `apply_migration` tool stamps its own timestamp** into
   `supabase_migrations.schema_migrations`, which will not match the filename you
   wrote locally, and the next `supabase db push` then aborts with "Remote migration
