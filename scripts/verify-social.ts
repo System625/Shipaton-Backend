@@ -10,39 +10,13 @@
 //
 // Creates three users and removes them again. Safe to re-run.
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { admin } from "./supabase-admin.ts";
 import { required } from "./env.ts";
+import { RUN, signUp, removeAccounts, makeChecker } from "./social-accounts.ts";
 
 const SUPABASE_URL = required("SUPABASE_URL");
-const ANON_KEY = required("SUPABASE_ANON_KEY");
 
-const RUN = Date.now();
-const PASSWORD = `Shelf-social-${RUN}!`;
-
-let failures = 0;
-function check(label: string, ok: boolean, detail = "") {
-  console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
-  if (!ok) failures++;
-}
-
-type Account = { userId: string; handle: string; client: SupabaseClient };
-
-async function signUp(tag: string): Promise<Account> {
-  const email = `verify+social-${tag}-${RUN}@shelf.test`;
-  const { data: created, error } = await admin.auth.admin.createUser({
-    email, password: PASSWORD, email_confirm: true,
-  });
-  if (error) throw new Error(`createUser: ${error.message}`);
-  const client = createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { error: signInError } = await client.auth.signInWithPassword({ email, password: PASSWORD });
-  if (signInError) throw new Error(`signIn: ${signInError.message}`);
-  // Handles are lowercase and 3-20 chars; the run stamp keeps re-runs from colliding.
-  const handle = `v${tag}${RUN}`.toLowerCase().slice(0, 20);
-  return { userId: created.user!.id, handle, client };
-}
+const { check, finish } = makeChecker();
 
 async function main() {
   console.log(`\nDeployed social verification against ${SUPABASE_URL}\n`);
@@ -253,14 +227,11 @@ async function main() {
     check("nor their share history", (peekShares?.length ?? 0) === 0,
       `${peekShares?.length ?? 0} rows`);
   } finally {
-    for (const acct of [alice, bob, carol]) {
-      await admin.auth.admin.deleteUser(acct.userId);
-    }
+    await removeAccounts([alice, bob, carol]);
     console.log("\ncleaned up test users.");
   }
 
-  console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) FAILED.\n`);
-  process.exit(failures === 0 ? 0 : 1);
+  finish();
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

@@ -1,18 +1,20 @@
 # Shelf backend HTTP API.
 #
-# Every response body and status code below was captured from the deployed project
-# on 8 September 2026, not written from the source. `npm run verify:functions`
-# re-checks the live endpoints against this contract in one command.
+# Every response body and status code below was captured from the deployed project,
+# not written from the source. `npm run verify:functions` re-checks the live endpoints
+# against this contract in one command.
 #
 # Every endpoint below is deployed. /share-resolve and /share-confirm went live on
-# 8 September 2026 and are checked by `npm run verify:share` (55 checks); the rest by
-# `npm run verify:functions` and `npm run verify:roulette`. Nothing here is aspirational.
+# 8 September 2026 and are checked by `npm run verify:share` (55 checks);
+# /games/popular-with-friends on 9 September, checked by
+# `npm run verify:friends-popular` (31); the rest by `npm run verify:functions` and
+# `npm run verify:roulette`. Nothing here is aspirational.
 
 openapi: 3.1.0
 
 info:
   title: Shelf backend API
-  version: "2026-09-08.3"
+  version: "2026-09-09.1"
   description: |
     Games catalog, share ingestion and roulette for the Shelf app.
 
@@ -33,6 +35,15 @@ info:
     aggregate of external critic scores; it is not Metacritic and must not be
     labelled as such.
 
+    **This file does not cover the whole backend.** The friends feed, the
+    notification inbox and the library are PostgREST tables and RPCs under
+    row-level security, not HTTP endpoints — there is no edge function to describe,
+    so they are absent here by design rather than by omission. They are documented
+    in the published API reference, and their migrations are the source of truth.
+    Only `/games/popular-with-friends` crosses over: it wraps an RPC in an endpoint
+    so the response carries the derived `abbreviation` and `colorKey` fields, which
+    a direct RPC call cannot.
+
 servers:
   - url: https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1
     description: Production (the only environment; there is no staging project)
@@ -49,6 +60,11 @@ tags:
       Live and verified 8 September 2026. Turns a shared TikTok or YouTube link
       into a library row. `/share-confirm` is the only path that writes
       `library_entries`.
+  - name: social
+    description: >
+      Live and verified 9 September 2026. Reads across the follow graph rather than
+      the caller's own rows, so what it returns depends on who they follow and on
+      what those people have opted to publish.
 
 security:
   - userToken: []
@@ -232,6 +248,104 @@ paths:
                   criticScore: 92
                   abbreviation: W3W
                   colorKey: green
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /games/popular-with-friends:
+    get:
+      tags: [social]
+      operationId: listPopularWithFriends
+      summary: What the people you follow are playing
+      description: |
+        Ranked by how many of the people the caller follows have the game on their
+        shelf. Deployed and verified 9 September 2026;
+        `npm run verify:friends-popular` re-checks it (31 checks).
+
+        **Counted:** `playing` and `beaten`. **Excluded:** `backlog` (an intention,
+        not a game they play) and `dropped` (a negative signal, and actively
+        misleading under a "popular" heading).
+
+        **A game appears only once at least 3 distinct followees have it.** That
+        floor is not a parameter and cannot be lowered by a caller — see below.
+
+        **Privacy.** `library_entries` is owner-only and stayed that way: no policy
+        on it changed, and a follower reading another account's rows still gets
+        zero. What this returns is a derived aggregate over people who opted in
+        with `profiles.share_activity` (default `true`), and it never attributes a
+        game to a named person — only a count.
+
+        The underlying function is `SECURITY DEFINER` and lives in `public`, which
+        is normally the shape that leaks. It is safe here because **it takes no
+        user id**: the viewer is `auth.uid()`, read inside, so there is no target
+        to point it at. Preserve that if it is ever edited.
+
+        Served by the same `games` function as `/games/{id}` and `/games/popular`.
+
+        **Why this is an endpoint and not a documented RPC call:** `abbreviation`
+        and `colorKey` are not columns — they are derived server-side. Calling the
+        function directly over PostgREST returns neither, and the app resolves a
+        missing `colorKey` to grey with no error on either side.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: >
+            Page size. Values above 100 are clamped; an unparseable value falls
+            back to 20 rather than erroring.
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: >
+            Rows to skip. Negative and unparseable values fall back to 0. Paging
+            past the end returns `[]`.
+      responses:
+        "200":
+          description: >
+            Games the caller's followees are playing, most-shared first. **An empty
+            array is the normal answer** for a new account, for anyone following
+            fewer than 3 people, and for anyone whose followees have not synced a
+            library — it is never an error. Captured from the deployed function
+            with `?limit=2` on 9 September 2026, against four seeded accounts.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CatalogGameWithFriendCount" }
+              example:
+                - id: 07d5a6f3-44c7-4784-a8aa-93025ac5a72b
+                  title: Hollow Knight
+                  slug: hollow-knight
+                  platforms:
+                    - { id: 3, name: Linux, slug: linux }
+                    - { id: 130, name: Nintendo Switch, slug: switch }
+                    - { id: 6, name: PC (Microsoft Windows), slug: win }
+                  releaseDate: "2017-02-24"
+                  genres: [Platform, Adventure, Indie]
+                  coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/cobfzp.jpg
+                  timeToBeatHours: 36.4
+                  sessionFit: low
+                  criticScore: 91
+                  abbreviation: HK
+                  colorKey: blue
+                  friendCount: 3
+                - id: 7725f739-6cb0-4f2e-ab46-cdfc72753213
+                  title: Hades
+                  slug: hades--1
+                  platforms:
+                    - { id: 130, name: Nintendo Switch, slug: switch }
+                    - { id: 6, name: PC (Microsoft Windows), slug: win }
+                  releaseDate: "2020-09-17"
+                  genres: [Role-playing (RPG), Adventure, Indie]
+                  coverImageUrl: https://images.igdb.com/igdb/image/upload/t_cover_big_2x/cob9kr.jpg
+                  timeToBeatHours: 70.3
+                  sessionFit: high
+                  criticScore: 94
+                  abbreviation: H
+                  colorKey: gold
+                  friendCount: 2
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "500": { $ref: "#/components/responses/ServerError" }
@@ -705,6 +819,27 @@ components:
             `slate` for an unknown key, so a rename on either side goes unnoticed
             — if a colour changes in theme.ts, say so and this list changes with it.
           example: red
+
+    CatalogGameWithFriendCount:
+      description: >
+        A `CatalogGame` with one field added. Every other field is byte-identical to
+        what `/search`, `/games/{id}` and `/games/popular` return, so the app renders
+        these in the same component with no new type.
+      allOf:
+        - $ref: "#/components/schemas/CatalogGame"
+        - type: object
+          required: [friendCount]
+          properties:
+            friendCount:
+              type: integer
+              minimum: 3
+              description: >
+                How many of the people you follow have this game with status
+                `playing` or `beaten`. Never below 3 — a game below that floor is
+                omitted from the list entirely rather than returned with a small
+                count, because at one or two the aggregate stops being anonymous.
+                It counts distinct people, not library rows.
+              example: 3
 
     ShareResolution:
       type: object

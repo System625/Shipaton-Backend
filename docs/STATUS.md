@@ -733,6 +733,22 @@ is now `library`-tagged rather than `unreleased` in `docs/openapi.yaml`.
 
 ---
 
+### 8b. The library needs no endpoint — **verified 9 Sep**
+
+Worth stating plainly because it has been discussed as though it were missing work:
+**`library_entries` has been readable and writable by its owner since migration
+`20260905000300`**, and the app can manage the whole library through PostgREST with the
+client it already has. Verified end to end on 9 Sep under a real JWT: insert, update,
+read back, delete, with `'wishlist'` refused by the status check (23514) and
+`(user_id, game_id)` unique (23505).
+
+So nothing on this side blocks the loop closing. What blocks it is app-side and one
+decision: `catalogId` in `useLibraryStore` holds slugs for the seven demo entries and
+backend uuids for anything added from search, while `game_id` is a uuid foreign key —
+so the slug rows will be rejected (23503) until they are either resolved through
+`/search` once or dropped. That decision is Sola's and the user's, not the backend's.
+Documented in the API reference on 9 Sep, which had never said any of this.
+
 ### 9. Friends feed — **backend DONE 9 Sep. App side is mock data.**
 
 Not in the spec, and there was no backend of any kind: the whole Friends tab is
@@ -764,6 +780,13 @@ shared, or what the roulette rolled them. Section 9 of `verify:social` exists so
 prove that did not widen — a follower reading the library of the person they follow
 must come back with zero rows, and does.
 
+**Amended 9 Sep by section 10, and the table above is still literally true.** "Popular
+with friends" publishes a derived *aggregate* over the libraries of people who opted in
+via `profiles.share_activity` — never a row, never a per-person attribution, and only
+through one function that cannot be aimed at a named user. `library_entries` itself did
+not change: not one policy on it was touched, and both verifiers still assert a follower
+reads zero rows. Read section 10 before assuming this line moved.
+
 **Three things nobody asked for, because UGC does not ship without them.** App Store
 guideline 1.2 wants a block, a report, and content removal before a user-generated
 content app goes live. So: `user_blocks` enforced *in the policies* rather than the UI
@@ -793,6 +816,94 @@ profile today, so the feed renders empty until that exists.
 **Also unresolved: the product has three names.** The backend, spec and every document
 say Shelf, `app.json` says Prysm, and the Figma screens say SHIPALOT. Three weeks from
 launch, before store listings are written.
+
+### 10. Popular with friends — **DONE 9 Sep.** `npm run verify:friends-popular`, 22 checks.
+
+`GET /games/popular-with-friends` over `shelf_popular_with_friends`. It answers "what
+are the people I follow actually playing", ranked by how many of them have the game.
+
+**The privacy decision, taken with the user rather than assumed.** This is the first
+feature that wanted the other side of the line section 9 drew. Three shapes were
+weighed:
+
+| Shape | Cost |
+|---|---|
+| Rank games attached to *posts* by people you follow | No privacy change at all — but empty until someone builds a post composer, which nobody has scheduled |
+| Followees' libraries, flat | Strongest feature; moves the line and makes section 9's table untrue |
+| **Followees' libraries, opt-in** — chosen | `profiles.share_activity`, so the owner publishes deliberately |
+
+**The line did not move.** `library_entries` is still owner-only, no policy on it
+changed, and section 8 of `verify:friends-popular` re-proves a follower reading a
+followee's actual rows gets zero. What is public is a derived aggregate over people who
+switched it on.
+
+**Why the function is safe in `public` despite being SECURITY DEFINER, and the property
+to preserve: it takes no user id.** The viewer is `auth.uid()`, read inside. There is no
+target to point it at. That is the entire difference between it and
+`shelf_blocked_between`, which shipped in `public` taking two uuids and became a
+block-list oracle. **Do not add a user-id argument.** Section 7 of the verifier asserts
+no such argument exists; if that check ever starts passing, the privacy argument has
+collapsed. The owner floor is a hardcoded literal for the same reason — a caller who
+could pass `1` would have a function that reads one followee's shelf back verbatim.
+
+**The residual leak, stated rather than hidden.** An aggregate over a set the viewer
+controls is not anonymous. Follow five people, snapshot, follow a sixth, snapshot again,
+and the delta is the sixth person's shelf. The floor prices that up and does not close
+it. The only real fix is noise, and noise in a twenty-row list reads as a bug. This is
+the accepted residual and it is what the opt-in toggle makes consensual.
+
+**Counted: `playing` and `beaten`. Excluded: `backlog` and `dropped`.** There is no
+"finished" or "wishlist" status — the four are `playing / backlog / beaten / dropped`.
+`dropped` is a negative signal and would be actively misleading under a "popular"
+heading; `backlog` means "intend to", which is a wishlist in all but name. The `in` list
+in the migration is the only thing deciding this, so it is a one-word change.
+
+**Why it is an edge function and not a raw RPC, which is not obvious.** `abbreviation`
+and `colorKey` are **not columns** — they are derived in `toCatalogGame()`. An app
+calling the RPC directly over PostgREST gets neither, and `GameCover.tsx` resolves a
+missing key as `coverColors[colorKey] ?? coverColors.slate`, so every cover renders the
+same grey with no error on either side. That is the drift that already cost this project
+once. `friendCount` is additive on top of `CatalogGame`, so the app needs no new type.
+
+### 11. Notifications — **DONE 9 Sep.** `npm run verify:notifications`, 39 checks.
+
+The bell in the app header is a `Pressable` with no `onPress` (`LibraryScreen.tsx:215`)
+and the only notifications that fire are local `expo-notifications` release reminders.
+This gives it something to open.
+
+**Scope, decided with the user: in-app inbox, no push delivery.** Push needs device
+tokens registered app-side plus APNs/FCM credentials on the prebuild native projects —
+store-submission work with three weeks to the deadline. Layering it on later needs no
+change to this schema, only a delivery worker reading the table.
+
+**For the record, because it was misremembered mid-session: what was dropped on 4 Sep
+was Expo *Go*, not Expo.** `docs/spec.md:6` says "drop Expo Go" and
+`technical-notes-for-sola.md:464` is headed "We lose Expo Go", because `expo-share-intent`
+needs prebuild. The app at `origin/main` is still Expo SDK 57 and still depends on
+`expo-notifications`. Push through Expo remains available.
+
+**Nothing writes the table but triggers.** There is no INSERT policy and no UPDATE
+policy at all, so no account can manufacture a notification for anyone — not even for
+itself — and marking read goes through `shelf_mark_notifications_read`, which is DEFINER,
+takes no user id, and can only ever change `read_at`. Read and delete-your-own are the
+whole client surface.
+
+**The dedupe index uses `NULLS NOT DISTINCT`** (Postgres 15+; this project is on 17.6).
+Without it the two NULL columns on a `follow` row make every row distinct from every
+other and the constraint never fires. Effect: unfollow/refollow and unlike/relike do not
+ring the bell twice, but each separate comment does.
+
+**All three triggers check blocks.** A blocked account following you, or liking its way
+through your posts, must not reach you through the bell — a block that is visible-but-mute
+is worse than none.
+
+**Two advisor WARNs are expected here and were accepted, not missed.**
+`get_advisors` flags `shelf_popular_with_friends` and `shelf_mark_notifications_read` as
+SECURITY DEFINER functions executable by `authenticated`. Both are intentional and both
+are safe for the same reason: neither can be aimed at a person. `shelf_mark_notifications_read`
+does take ids, but a foreign id and a nonexistent id both return `0`, so it is not an
+oracle — asserted directly in section 6 of the verifier. The three trigger functions live
+in `private` and the advisor does not see them at all.
 
 ---
 
@@ -851,6 +962,18 @@ These are the ones that cost time if you hit them without warning.
   `usage` granted to `authenticated` and `service_role` only): still callable from
   inside an RLS policy, unreachable over HTTP. `get_advisors` catches this immediately;
   run it after any migration that adds one.
+- **Derived fields are not columns, so a raw RPC silently loses them.**
+  `abbreviation` and `colorKey` exist only in `toCatalogGame()`. Anything that reaches a
+  catalog row through PostgREST instead of an edge function returns neither, and
+  `GameCover.tsx` resolves a missing `colorKey` as
+  `coverColors[colorKey] ?? coverColors.slate` — every cover the same grey, no error on
+  either side. This is why `/games/popular-with-friends` is a route rather than a
+  documented RPC call. Any future list of games owes the app the same shape.
+- **`NULLS NOT DISTINCT` is required for a unique index over nullable columns.** By
+  default Postgres treats each NULL as distinct, so a dedupe index across columns that
+  are NULL for some row kinds never fires for those kinds — silently, with no error.
+  `notifications_dedupe` needs it or every re-follow rings the bell again. Postgres 15+;
+  this project is on 17.6.
 - **The Supabase MCP `apply_migration` tool stamps its own timestamp** into
   `supabase_migrations.schema_migrations`, which will not match the filename you
   wrote locally, and the next `supabase db push` then aborts with "Remote migration

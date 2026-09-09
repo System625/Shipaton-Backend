@@ -21,7 +21,9 @@
     "verify:roulette": "tsx scripts/verify-roulette.ts",
     "verify:share": "tsx scripts/verify-share.ts",
     "measure:share": "tsx scripts/measure-share-hitrate.ts",
-    "verify:social": "tsx scripts/verify-social.ts"
+    "verify:social": "tsx scripts/verify-social.ts",
+    "verify:friends-popular": "tsx scripts/verify-popular-with-friends.ts",
+    "verify:notifications": "tsx scripts/verify-notifications.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
