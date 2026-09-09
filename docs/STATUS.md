@@ -27,8 +27,10 @@ twelve abbreviation and hashtag cases resolve in the top 5 against real data.
 `/search` and `/games/:id` on 7 Sep, `/games/popular` and `/roulette` on 8 Sep, and
 `/share-resolve` + `/share-confirm` on 8 Sep — which was the last build step. Three
 commands re-check the lot: `npm run verify:functions`, `verify:roulette`,
-`verify:share`. **The backend build is done; what is left is app-side and the
-free-tier decision.**
+`verify:share`. Share matching has since been measured against 21 real gaming
+TikTok links (`npm run measure:share`), which found and fixed two more defects —
+one of them a confidently wrong match. **The backend build is done; what is left is
+app-side and the free-tier decision.**
 
 ---
 
@@ -616,11 +618,65 @@ OpenGraph fallback and none is needed.** Delete that worry rather than carrying 
    first score over 0.55, so a caption reading `#aesthetic #eldenring` would stop
    at the junk hit and never try the tag naming the actual game.
 
-**Still open, and it needs real inputs:** collect ~20 real gaming TikTok captions
-and measure how often the top candidate is right. Everything above was verified
-against one real gaming YouTube link and one real non-gaming TikTok link — enough
-to prove the machinery and the negative case, not enough to know the hit rate.
-That measurement wants share links from an actual phone.
+**The hit rate is now measured, on 21 real gaming TikTok links the user supplied
+8 Sep.** `npm run measure:share` replays them through the deployed endpoint and
+prints caption, `confident` and candidates per link; the links live in
+`scripts/fixtures/tiktok-share-links.txt`. oEmbed returned a caption for 21/21, so
+the datacenter question is closed twice over.
+
+The batch found two more defects — the first of them the same *shape* as the pet
+video, and worse.
+
+3. **A typo'd caption was confidently matched to a Chinese film tie-in.** The
+   caption `Eldin Ring #eldinring #gameplay #foryou #2023 #gaming #shorts ...`
+   returned `confident: true` for *A Chinese Ghost Story 2023*. The confidence
+   guard was working exactly as written; the data lied to it:
+
+   ```
+   game_alt_titles.alt_title  '倩女幽魂2023'  ->  match_title  '2023'
+   game_alt_titles.alt_title  '猎鹰2023'      ->  match_title  '2023'
+   ```
+
+   `shelf_match_title()` strips everything outside `[a-z0-9 ]`, so a Chinese title
+   is not normalized, it is **deleted**, and the release year is left standing
+   alone as an exact, indexed *name*. `#2023` is one of the most common tags on
+   TikTok, and the term genuinely equalled the stored name — the claim was true,
+   the data was junk. Migration `20260905001000` had already seen this shape and
+   set a floor of two characters; `2023` is four, so length was never the property
+   that mattered. Migration `20260908195307` keeps a residue only when it is
+   distinctive: three or more characters and not purely numeric, with mixed-script
+   titles like `Nier: Automata【ニーア】` unaffected because their Latin half
+   survives intact. 230 rows deleted.
+
+4. **A row the tag literally named was vetoed by a fuzzier row above it.** The
+   caption `#battlefield5 #battlefieldv #gamingvideo ...` came back unmatched even
+   though `#battlefield5` normalizes to `battlefield5` and *Battlefield V*'s title
+   normalizes to `battlefield 5` — the exact claim the guard exists to make. Four
+   other Battlefield games outscored it on trigram similarity, and `settled()` only
+   ever tested `candidates[0]`. Ranking and naming are different questions, and
+   noise tags manufacture those blockers constantly (`#gameplay` →
+   *The End of Gameplay*, `#shorts` → *Cursed Shorts*, `#playstation` →
+   *PlayStation Home*). The naming question is now asked of the whole candidate
+   list, each row against the term that found it, and the row that answers it is
+   promoted — `shelf_named_candidate`, migration `20260908210500`.
+
+**Where the 21 links stand now: 16 asserted confident, 14 of them right.** The two
+wrong ones are both `#callofduty` on a caption naming a specific entry
+(*Call of Duty 4*, *MW2 Remastered*), where the tag truly does name the base game
+— the rule is right and the answer is coarse, the correct entry is in the
+candidate list, and confirm is a required step. Five abstain rather than assert,
+which is the designed behaviour, and three causes remain:
+
+- **Search recall, 2 links.** `#awayout` never surfaces *A Way Out* and
+  `#battlefield6` never surfaces *Battlefield 6*, though both are in the catalog:
+  trigram ranking drops them below the top 5, so promotion cannot reach them. The
+  fix is an index-backed exact-name lookup per term, independent of ranking — a
+  generated spaces-removed column with a btree index on `games` and
+  `game_alt_titles`. **This is the next thing worth building here.**
+- **Abbreviations, 1 link.** `#tlou2` would match, but term extraction stops at
+  four terms and it is seventh in the caption.
+- **Catalog gaps, 2 links.** A brand-new co-op game named only in prose, and a
+  caption with no game in it. Correctly unmatched.
 
 Sola handles `expo-share-intent` + prebuild, which is what loses Expo Go. **The app
 has not started this** — see the app-side note below.
@@ -715,6 +771,23 @@ These are the ones that cost time if you hit them without warning.
   way is inert, and a trailing `random()` only fires on exact ties. If a knob is
   supposed to change behaviour, assert the distribution it produces — step 8 shipped
   two bugs of exactly this shape that read fine in review.
+- **Normalization that strips a script does not shorten a title, it invents one.**
+  `shelf_match_title()` keeps `[a-z0-9 ]`, so `'倩女幽魂2023'` is stored as the name
+  `'2023'` — and anything comparing terms to stored names then has an exact,
+  indexed match to a game nobody named. Length floors do not catch it (a year is
+  four characters). The test is whether the source survived normalization, not how
+  long the result is. Applies to any future normalizer, not just this one.
+- **Ranking is not naming, and testing only `candidates[0]` conflates them.** A row
+  a hashtag names exactly can sit below three fuzzier rows, and noise tags
+  (`#gameplay`, `#shorts`, `#playstation`) manufacture those blockers on almost
+  every real caption. Ask the stronger question of the whole list.
+- **The Supabase MCP `apply_migration` tool stamps its own timestamp** into
+  `supabase_migrations.schema_migrations`, which will not match the filename you
+  wrote locally, and the next `supabase db push` then aborts with "Remote migration
+  versions not found in local migrations directory". Rename the local file to the
+  version the ledger recorded — do **not** reach for `migration repair`, which
+  re-runs work that already succeeded. Check with
+  `select version, name from supabase_migrations.schema_migrations order by version desc`.
 
 ---
 

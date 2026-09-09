@@ -1,0 +1,26 @@
+# Real gaming TikTok share links, supplied by the user 8 Sep 2026.
+# The matcher was previously only ever tested against one real gaming YouTube link and
+# one real non-gaming TikTok link, which proved the machinery and the negative case but
+# said nothing about the hit rate on captions people actually write. These are that
+# missing evidence. Used by scripts/measure-share-hitrate.ts.
+https://www.tiktok.com/@valchiriatv/video/7545969759876025622?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@soulivanh56/video/7643061690816302357?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@malakyemong/video/7574850383756021022?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@sirleerhm_/video/7674153268985040149?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@hellmei0/video/7676179846787075358?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@sosg_society/video/7412126829265374482?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@harlfx_/video/7486210416788491528?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@sb_designs/video/7665635794580704545?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@ackerlad6/video/7448269011462262049?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@gameranh1/video/7637011954913103122?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@valchiriatv/video/7561939196580007190?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@justdougy/video/7534351224624123192?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@subwaysurfers/video/7608242750542335254?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@schleswiger.ac/video/7613463000606952726?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@iqupw/video/7519250502043962638?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@valchiriatv/video/7483850778910739734?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@gameplay_village/video/7198040200180698374?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@gaming43510/video/7546646199747611917?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@creamiliciouzzz/video/7491606699351084306?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@saiyvx/video/7652492115296963858?is_from_webapp=1&sender_device=pc
+https://www.tiktok.com/@look4volt/video/7608874463391780110?is_from_webapp=1&sender_device=pc

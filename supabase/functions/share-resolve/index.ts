@@ -45,22 +45,37 @@ Deno.serve(async (req) => {
   if (intakeError) return errorResponse(intakeError.message, 500);
 
   /**
-   * Is the best row good enough to stop looking, and to assert to the user?
+   * Is there a row here good enough to stop looking, and to assert to the user?
    *
-   * A YouTube title is a genuine attempt at the game's name, so trigram proximity
-   * is real evidence and the threshold stands. A TikTok hashtag is not an attempt
-   * at anything — it is a word someone tagged — so proximity means nothing there
-   * and the bar is the stronger claim: the term IS one of this game's names, up to
-   * spacing. See migration 20260908183000 for the pet video that proved it.
+   * A YouTube title is a genuine attempt at the game's name, so trigram proximity is
+   * real evidence and the threshold stands. A TikTok hashtag is not an attempt at
+   * anything -- it is a word someone tagged -- so proximity means nothing there and the
+   * bar is the stronger claim: the term IS one of this game's names, up to spacing.
+   * See migration 20260908183000 for the pet video that proved it.
+   *
+   * The question is asked of the whole list, not just the top row, and the row that
+   * answers it is promoted to the front. Ranking and naming are different questions:
+   * "#battlefield5" names Battlefield V exactly, but four other Battlefield games
+   * outscore it on trigram similarity, and testing only candidates[0] let them veto it.
+   * See migration 20260908210500.
    */
-  async function settled(best: Candidate | undefined): Promise<boolean> {
+  async function settled(): Promise<boolean> {
+    const best = candidates[0];
     if (!best || (best.score ?? 0) < PLAUSIBLE) return false;
     if (provider === "youtube") return (best.score ?? 0) >= CONFIDENT;
-    const { data } = await auth.supabase.rpc("shelf_term_names_game", {
-      term: best.foundBy,
-      p_game_id: best.id,
+
+    const list = candidates.filter((c) => (c.score ?? 0) >= PLAUSIBLE).slice(0, 5);
+    if (list.length === 0) return false;
+    // Each candidate is checked against the term that found it, never another's.
+    const { data: namedId } = await auth.supabase.rpc("shelf_named_candidate", {
+      terms: list.map((c) => c.foundBy),
+      ids: list.map((c) => c.id),
     });
-    return data === true;
+    const named = list.find((c) => c.id === namedId);
+    if (!named) return false;
+
+    candidates = [named, ...candidates.filter((c) => c.id !== named.id)];
+    return true;
   }
 
   let extractedText: string | null = null;
@@ -82,7 +97,7 @@ Deno.serve(async (req) => {
         // Stop on a match worth asserting, not merely on a high score. A caption
         // like "#aesthetic #eldenring" used to break here on the junk hit from the
         // first tag and never reach the tag naming the actual game.
-        if (await settled(candidates[0])) {
+        if (await settled()) {
           confident = true;
           break;
         }
@@ -102,7 +117,7 @@ Deno.serve(async (req) => {
               .rpc("shelf_search_games", { q: term, max_results: 5 })
               .returns<CatalogRow[]>();
             candidates = merge(candidates, (data ?? []).map((row) => ({ ...row, foundBy: term })));
-            confident = await settled(candidates[0]);
+            confident = await settled();
           }
         }
       }
