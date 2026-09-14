@@ -7,3 +7,7 @@ supabase/.temp/
 supabase/.branches/
 *.log
 .seed-cache/
+
+# search-lab pulls these down; they are regenerable and large
+scripts/search-lab/corpus.jsonl
+scripts/search-lab/steamtags.jsonl

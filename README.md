@@ -29,10 +29,12 @@ is built, what is blocked, and what to do next, in order.
 docs/STATUS.md                   start here: state, blockers, next steps
 docs/spec.md                     the build spec and all the reasoning
 docs/research/                   independent cross-check reports
+docs/research/semantic-search.md vague search: why the obvious build scores 0%
 supabase/migrations/             schema, RLS, matching, search + roulette SQL
 supabase/functions/_shared/      IGDB client, ingest, CatalogGame, oEmbed
 supabase/functions/<name>/       one edge function per endpoint
 scripts/                         local seed + smoke scripts (Node, not Deno)
+scripts/search-lab/              vague-search eval sets + measurement harness
 ```
 
 ## Setup
