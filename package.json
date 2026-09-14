@@ -9,7 +9,8 @@
     "db:reset": "supabase db reset",
     "seed:platforms": "tsx scripts/seed-platforms.ts",
     "seed:games": "tsx scripts/seed-games.ts",
-    "seed": "npm run seed:platforms && npm run seed:games",
+    "seed:external-ids": "tsx scripts/seed-external-ids.ts",
+    "seed": "npm run seed:platforms && npm run seed:games && npm run seed:external-ids",
     "backfill:ratings": "tsx scripts/backfill-rating-counts.ts",
     "verify:igdb": "tsx scripts/verify-igdb.ts",
     "smoke:oembed": "tsx scripts/smoke-oembed.ts",
@@ -25,8 +26,11 @@
     "verify:friends-popular": "tsx scripts/verify-popular-with-friends.ts",
     "verify:notifications": "tsx scripts/verify-notifications.ts",
     "verify:wishlist": "tsx scripts/verify-wishlist.ts",
-    "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
+    "verify:linking": "tsx scripts/verify-account-linking.ts",
     "verify:search-filters": "tsx scripts/verify-search-filters.ts",
+    "lab:steam-library": "tsx scripts/link-lab/real-steam-library.ts",
+    "lab:xbox-bridge": "tsx scripts/link-lab/xbox-title-bridge.ts",
+    "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
     "lab:eval": "tsx scripts/search-lab/run-eval.ts"
   },
   "dependencies": {

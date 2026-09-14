@@ -18,6 +18,8 @@
     "supabase/functions/_shared/igdb.ts",
     "supabase/functions/_shared/session-fit.ts",
     "supabase/functions/_shared/catalog-game.ts",
-    "supabase/functions/_shared/oembed.ts"
+    "supabase/functions/_shared/oembed.ts",
+    "supabase/functions/_shared/steam.ts",
+    "supabase/functions/_shared/platform-import.ts"
   ]
 }

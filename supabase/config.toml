@@ -19,3 +19,17 @@ verify_jwt = true
 verify_jwt = true
 [functions.roulette]
 verify_jwt = true
+[functions.steam-link-start]
+verify_jwt = true
+# The ONLY unauthenticated endpoint in this backend, and it has to be: Steam
+# redirects the user's browser here after sign-in, with no Authorization header and
+# no way to add one. It is safe because it trusts nothing in the request — the
+# identity is confirmed by an OpenID check_authentication round trip to Steam, and
+# the single-use nonce in the query string is what names the user. Deploy it with
+# `--no-verify-jwt`; this line only covers `supabase functions serve`.
+[functions.steam-link-callback]
+verify_jwt = false
+[functions.steam-link-finish]
+verify_jwt = true
+[functions.steam-import]
+verify_jwt = true
