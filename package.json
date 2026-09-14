@@ -26,6 +26,7 @@
     "verify:notifications": "tsx scripts/verify-notifications.ts",
     "verify:wishlist": "tsx scripts/verify-wishlist.ts",
     "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
+    "verify:search-filters": "tsx scripts/verify-search-filters.ts",
     "lab:eval": "tsx scripts/search-lab/run-eval.ts"
   },
   "dependencies": {
