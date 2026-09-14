@@ -91,6 +91,13 @@ export type IgdbGame = {
   total_rating_count?: number;
   game_modes?: { name: string }[];
   keywords?: { name: string }[];
+  // Descriptive text. All four are omitted rather than empty when IGDB has none;
+  // `storyline` is absent for ~64% of even well-rated games, so treat a missing
+  // one as normal rather than as a failed fetch.
+  summary?: string;
+  storyline?: string;
+  themes?: { name: string }[];
+  player_perspectives?: { name: string }[];
   game_type?: number; // 0 = main_game
   parent_game?: number;
   version_parent?: number;
@@ -125,9 +132,16 @@ export type IgdbPlatform = {
 // Cyrillic that normalizes to junk. Migration 20260905001000 filters that at write
 // time. How much useful acronym coverage IGDB actually has is UNMEASURED; check it
 // during the seed. Requesting the field costs nothing now and a full re-seed later.
+// `summary`, `storyline`, `themes` and `player_perspectives` were added on 11 Sep
+// for vague search — see migration 20260911120000_descriptive_fields.sql. They cost
+// nothing extra per request (Apicalypse charges per request, not per field) but
+// they do enlarge the response: summary alone is a median 740 chars on rated games,
+// so seed pages of 500 get meaningfully heavier. If the seed starts timing out,
+// drop the page size before dropping fields.
 export const GAME_FIELDS =
   "fields name, slug, first_release_date, cover.image_id, genres.name, platforms, " +
   "aggregated_rating, total_rating_count, game_modes.name, keywords.name, " +
+  "summary, storyline, themes.name, player_perspectives.name, " +
   "game_type, parent_game, " +
   "version_parent, alternative_names.name;";
 
@@ -216,8 +230,20 @@ export function timeToBeatQuery(gameIds: number[]): string {
 
 /**
  * Cover URLs are built by hand from image_id. The URL IGDB returns is `t_thumb`
- * and is too small to use. `t_cover_big` is 264x374; `_2x` gives 528x748, which is
- * what a phone needs. An invalid size token 404s rather than falling back.
+ * and is too small to use (90x90). `_2x` is what a phone needs. An invalid size
+ * token 404s rather than falling back.
+ *
+ * Sizes MEASURED by downloading the real images on 11 Sep 2026, not read off
+ * IGDB's docs — this comment previously claimed `t_cover_big` was 264x374, which
+ * is what IGDB publishes but not what it serves:
+ *
+ *   t_thumb  90x90   t_cover_big  264x352   t_cover_big_2x  528x704
+ *   t_720p   540x720 t_1080p      810x1080
+ *
+ * Every one of those except t_thumb is 3:4 (0.750), and 14 of the 15 most-rated
+ * covers measure exactly 528x704. The odd ones are small source images IGDB will
+ * not upscale, so treat 3:4 as reliable but not guaranteed. 264x374 would be
+ * 0.706 — a frame built to it letterboxes every cover in the app.
  */
 export function coverUrl(imageId: string | undefined): string | null {
   if (!imageId) return null;

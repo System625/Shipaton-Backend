@@ -25,6 +25,13 @@ export type GameUpsert = {
   release_tbd: boolean;
   cover_url: string | null;
   genres: string[];
+  // Descriptive text. See migration 20260911120000_descriptive_fields.sql for
+  // coverage numbers and for why `keywords` is stored but must not be trusted.
+  summary: string | null;
+  storyline: string | null;
+  themes: string[];
+  perspectives: string[];
+  keywords: string[];
   critic_score: number | null;
   total_rating_count: number;
   igdb_game_type: number | null;
@@ -66,6 +73,9 @@ const secondsToHours = (s: number | undefined): number | null => {
 export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): GameUpsert {
   const ttbNormally = secondsToHours(ttb?.normally);
   const genres = (game.genres ?? []).map((g) => g.name);
+  // Computed once: deriveSessionFit() reads these, and now so does the row itself.
+  const keywordNames = (game.keywords ?? []).map((k) => k.name);
+  const gameModes = (game.game_modes ?? []).map((m) => m.name);
   return {
     igdb_id: game.id,
     slug: game.slug ?? null,
@@ -78,6 +88,14 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
     release_tbd: !game.first_release_date,
     cover_url: coverUrl(game.cover?.image_id),
     genres,
+    // IGDB omits these rather than sending empty, so every one needs a fallback.
+    // `summary` is present for 99.8% of rated games, `storyline` for only ~36% --
+    // a null storyline is the normal case, not a fetch failure.
+    summary: game.summary ?? null,
+    storyline: game.storyline ?? null,
+    themes: (game.themes ?? []).map((t) => t.name),
+    perspectives: (game.player_perspectives ?? []).map((p) => p.name),
+    keywords: keywordNames,
     // aggregated_rating is IGDB's aggregate of external critic scores, 0-100.
     // It is NOT Metacritic and must not be labelled as such in the UI.
     critic_score: game.aggregated_rating == null ? null : Math.round(game.aggregated_rating),
@@ -96,8 +114,8 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
     ttb_count: ttb?.count ?? null,
     session_fit: deriveSessionFit({
       genres,
-      gameModes: (game.game_modes ?? []).map((m) => m.name),
-      keywords: (game.keywords ?? []).map((k) => k.name),
+      gameModes,
+      keywords: keywordNames,
       ttbNormallyHours: ttbNormally,
     }),
     source: "igdb",
