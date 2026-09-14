@@ -1,7 +1,10 @@
 # Shelf backend — where things stand
 
-**Last updated 8 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 14 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
+
+**The app is called Prysm.** Settled 14 Sep. "Shelf" survives as the internal name
+of this service and throughout these docs; nothing user-facing should carry it.
 
 This is the pickup doc. Read it, then `docs/spec.md` for any *why* it doesn't
 answer. The spec is the authority — every external claim in it was checked against
@@ -29,8 +32,150 @@ twelve abbreviation and hashtag cases resolve in the top 5 against real data.
 commands re-check the lot: `npm run verify:functions`, `verify:roulette`,
 `verify:share`. Share matching has since been measured against 21 real gaming
 TikTok links (`npm run measure:share`), which found and fixed two more defects —
-one of them a confidently wrong match. **The backend build is done; what is left is
-app-side and the free-tier decision.**
+one of them a confidently wrong match. **The backend build is done, and the free-tier decision
+landed 14 Sep — paywall after the import result, imported rows count against the
+50-game limit (`docs/research/account-linking.md` §11). What is left is app-side.**
+
+---
+
+## Pricing and paywall — settled 14 Sep
+
+Josh closed every open commercial decision. Research and evidence in
+`docs/research/pricing.md`.
+
+- **$4.99/month, $29.99/year.** GG\| — the closest competitor — charges $4.99 and
+  $48.99, so we match on monthly and undercut hard on annual.
+- **Free tier stays at 50 games.** `FREE_TIER_GAME_LIMIT` is unchanged.
+- **Imported rows count against the limit, and the paywall lands after the import
+  result.** Show the user all 412 games we found, then ask.
+- **Trial is long, 17–32 days** — take 17–21 so the first cohort converts before
+  judging closes on 22 Oct.
+
+**Xbox is import-only.** We are staying on OpenXBL's free 150 requests/hour tier,
+and that ceiling is app-wide rather than per-user, so achievement sync is out of
+scope until someone buys the $5/month tier.
+
+---
+
+## Account linking — Steam is built and live, 14 Sep
+
+Steps 0, 1 and 2 of `docs/research/account-linking.md` §10, in one pass.
+
+**Step 0, the prerequisite: `game_external_ids`.** The store-id → catalog-game map,
+seeded by `npm run seed:external-ids` as a third seed pass. **88,295 edges**: 78,273
+Steam, 9,545 Microsoft, 479 Android. 12,657 of the Steam edges are parent hops, which
+is what makes "Skyrim Special Edition" land on Skyrim. An import is now one SQL call
+with **zero IGDB round trips** — which is the only reason it fits in an edge
+function's 2s CPU budget.
+
+**Step 1, Steam.** Four edge functions: `steam-link-start` → Steam's OpenID page →
+`steam-link-callback` → `steam-link-finish` → `steam-import`. The OpenID
+`check_authentication` round trip happens server-side; the `claimed_id` in a redirect
+is attacker-controlled until Steam confirms it.
+
+**Step 2, defects 8a–8c.** 8a is a clamp in `_shared/platform-import.ts`, **not** a
+widened column — deliberately, per §8a. 8b is `shelf_import_library()`, which dedupes
+and never overwrites a status, rating or note the user set. 8c is the widened
+`source_kind` constraint plus `imported_uid`.
+
+`npm run verify:linking` — **61 checks, all passing.** Not just against real JWTs:
+the last twelve drive the *deployed* functions, including **a real 4,652-game Steam
+library imported end to end in 3.4 seconds** — 1,797 appids resolved, 1,656 rows
+after editions collapsed onto shared parents, and the 9,120.6h Counter-Strike 2 row
+surviving the clamp.
+
+### The bug that only the live test could find
+
+The first run of that import reported **1,000 matched** where a direct measurement of
+the same library found 1,797, with Counter-Strike 2 sitting in the *unmatched* list.
+1,000 is not a number a matcher produces — it is PostgREST's default `max-rows`.
+`shelf_resolve_external_ids` returned `setof`, and PostgREST paginates a
+set-returning RPC exactly like a table: everything past the cap was dropped with no
+error and no truncation flag. **The import returned 200, wrote 956 real games, and
+looked entirely fine while doing 56% of its job.**
+
+Fixed in `20260914120000_resolve_returns_jsonb.sql` by returning one `jsonb` value
+instead of a row set, which makes the cap structurally unreachable rather than merely
+distant. Chunking the caller at 500 would have worked that day and broken again the
+moment anyone touched `max-rows`.
+
+Two things worth carrying forward. **A migration applying and a function deploying
+are different facts, and so are "the endpoint returns 200" and "the endpoint works"**
+— every check short of counting rows passed. And the earlier
+`lab:steam-library` measurement was unaffected only by luck: it chunks input at 1,000
+uids, so each call returned ~380 rows and never approached the cap.
+
+### The numbers changed, and the headline is not what the research said
+
+`npm run lab:steam-library <vanity|steamid>` resolves a **real** library instead of
+the SteamSpy proxy. Against a real 4,652-game account:
+
+| subset | resolved |
+|---|---|
+| everything owned | **38.6%** |
+| ever played | **83.1%** |
+| top 20 by playtime | **85.0%** |
+
+The 87.8% in the research doc was measured on Steam's 2,000 most-owned apps and does
+not survive contact with an individual account. **Owned and played are different
+sets**, and every miss is in the never-opened part. §0 of the research doc now leads
+with this.
+
+### Xbox: Josh's DisplayCatalog challenge, measured
+
+`npm run lab:xbox-bridge`. The bridge is real — 92.5% of our Microsoft store ids
+return an `XboxTitleId` — but IGDB's Microsoft coverage caps the deterministic route
+at **63.3%** of a played library. That is between Josh's two thresholds, so the call
+is: build it as a **precision layer over** the name matcher (97.0% rank-1), not as a
+replacement, and **Xbox does not move ahead of Android** in the build order. Research
+doc §4a.
+
+All four functions are deployed — `steam-link-callback` with `verify_jwt = false`,
+which it must have, since Steam's redirect cannot carry a JWT. `docs/openapi.yaml`
+describes all four as of 14 Sep.
+
+### Still open here
+
+- **The OpenID handshake works — Sola drove it end to end on 14 Sep.** That was the
+  last unknown in the flow and it is now closed. His import then looked wrong (11
+  games in Steam, 4 in the app) and it was two separate things, neither of them the
+  matcher:
+  - **`skip_unvetted_apps` defaults to true** on Steam's side and silently drops
+    owned games. Now sent as `0`; it recovered 2 of his 7, both already in our
+    catalog, and took the 4,652-game reference library from 4,652 to 4,667. Guarded
+    by a check that stubs `fetch` and asserts the query string — nothing else can
+    see a dropped parameter, because the call still succeeds and still writes rows.
+  - **Steam will not disclose a free-to-play game the user has never launched.** The
+    licence is granted on first run, so the gate is ownership, not playtime. No
+    parameter reaches these and the community XML that used to is now behind a
+    login. **Permanent ceiling, not a bug.**
+- **DEFECT 8d IS OPEN and it needs a decision.** Disconnect sets
+  `source_kind='manual'` on rows the user edited, and `shelf_import_library`
+  coalesces that, so the row never rejoins `'steam'` and **its playtime freezes
+  permanently** — measured: 6.0h stays 6.0h when Steam says 25.0h. `imported_uid`
+  comes back while `source_kind` does not, so the row's provenance contradicts
+  itself and no later disconnect can clear it. Pinned by `verify:linking` §5a, where
+  three checks PASS by asserting the bug; rewrite them, do not delete them, when it
+  is fixed. **The half that matters is Sola's: a "Sync now" button, so nobody
+  disconnects merely to re-sync.** See account-linking.md §8d.
+- **The app must stop calling `total` "your Steam library".** It is only what Steam
+  disclosed. "We added 4 of your 5" told Sola a library size he could see was wrong.
+  Say "Added N games from Steam".
+- **The private-profile path is measured but not exercised end to end.** The empty
+  `{"response":{}}` shape is confirmed against a real private profile; the 409 it
+  produces has not been seen by the app.
+- **The wishlist is NOT missing from `openapi.yaml`** — an earlier note here said it
+  was. That file documents edge functions only, by design; the wishlist is a
+  PostgREST table and is named in the "does not cover the whole backend" paragraph
+  alongside the library, the feed and the inbox. It is fully documented in the
+  published API reference (Version 8, 12 Sep) and in `technical-notes-for-sola.md` §2.
+  **The real debt is that Sola may never have seen any of it:** the artifact is shared
+  by link and viewers stay pinned to the version they were shared. That pin has not
+  moved since it last cost real work — on 8 Sep Sola built a 15-query client-side
+  workaround for `/roulette`, an endpoint that already existed, because he was reading
+  a pinned old version.
+- **Xbox, Android and PlayStation are not built.** Steps 3–5 of the research doc's
+  build order.
 
 ---
 
@@ -39,6 +184,14 @@ app-side and the free-tier decision.**
 **Nothing on IGDB. The remaining blocker is auth provider enablement** — Apple
 Developer Program membership and a Google Cloud project, both Josh's, per
 `docs/auth-setup.md`. Unchanged by any of the 7 Sep work.
+
+**The Steam and OpenXBL keys are handled.** They arrived 14 Sep pasted into
+`docs/decisions-for-josh.md`, which is tracked — caught before any commit, moved to
+the gitignored `.env`, and that file now names them rather than holding them. They
+are also set as **Supabase secrets** as of 14 Sep, along with
+`APP_LINK_RETURN_URL=prysm://link/steam`, so the edge functions can read them. Note
+that `grep -r` here respects `.gitignore` and will not see `.env`; `git grep` over
+tracked files is the check that actually matters.
 
 <details>
 <summary>Resolved 7 Sep — the Twitch 2FA blocker, kept for the record</summary>
@@ -433,7 +586,9 @@ The other 11 cases were already correct and are unchanged. `verify:functions` pi
 the `cyberpunk` case so it cannot regress silently.
 
 **The two remaining cases are different bugs, and no popularity rule can fix them.**
-Do not re-open this section expecting them:
+**Both are now FIXED — 12 Sep, migration `20260912140000`, together with the recall
+failure in section 7, because all three were the same missing capability.** The
+diagnosis below stands and is kept because it is what pointed at the right fix:
 
 - `dragonsdogma2` — Dragon's Dogma (0.588, **113** ratings) beats Dragon's Dogma II
   (0.526, **89** ratings). The wanted row is also the *less*-rated one, so
@@ -443,8 +598,14 @@ Do not re-open this section expecting them:
   0.452, because neither the full title nor the `botw` alternative title is similar
   to the mixed needle. `botw` on its own ranks it first. **Multi-token queries.**
 
-Both are worth one change together rather than two drive-bys, and neither is
-blocking: every case is still in the top 5.
+They were worth one change together rather than two drive-bys, and that is how they
+were done. `dragonsdogma2` is now Dragon's Dogma II at **1.000** — the needle is the
+title with the spaces taken out, which the new squashed-name index matches exactly.
+`zelda botw` is now Breath of the Wild at **0.600**, found by token coverage:
+`zelda` is a word in its title and `botw` is one of its alternative titles, and it
+is the **only** row in all 89,117 that accounts for both tokens. Neither is
+reachable by whole-needle similarity, which is why no amount of ranking work here
+ever moved them. See section 7.
 
 ### 5. `/search`, `/games/:id` and `/games/popular` live — **DONE 7-8 Sep**
 
@@ -660,21 +821,36 @@ video, and worse.
    list, each row against the term that found it, and the row that answers it is
    promoted — `shelf_named_candidate`, migration `20260908210500`.
 
-**Where the 21 links stand now: 16 asserted confident, 14 of them right.** The two
-wrong ones are both `#callofduty` on a caption naming a specific entry
-(*Call of Duty 4*, *MW2 Remastered*), where the tag truly does name the base game
-— the rule is right and the answer is coarse, the correct entry is in the
-candidate list, and confirm is a required step. Five abstain rather than assert,
-which is the designed behaviour, and three causes remain:
+**Where the 21 links stand now: 19 asserted confident, 17 of them right** —
+re-measured with `npm run measure:share` on 12 Sep, immediately after migration
+`20260912140000`. It was **16 confident, 14 right** before it. The three links that
+changed all went from abstaining to *correct*, none went the other way, and the two
+wrong ones are unchanged: both are `#callofduty` on a caption naming a specific
+entry (*Call of Duty 4*, *MW2 Remastered*), where the tag truly does name the base
+game — the rule is right and the answer is coarse, the correct entry is in the
+candidate list, and confirm is a required step. Two abstain rather than assert,
+which is the designed behaviour, and one cause remains:
 
-- **Search recall, 2 links.** `#awayout` never surfaces *A Way Out* and
-  `#battlefield6` never surfaces *Battlefield 6*, though both are in the catalog:
-  trigram ranking drops them below the top 5, so promotion cannot reach them. The
-  fix is an index-backed exact-name lookup per term, independent of ranking — a
-  generated spaces-removed column with a btree index on `games` and
-  `game_alt_titles`. **This is the next thing worth building here.**
-- **Abbreviations, 1 link.** `#tlou2` would match, but term extraction stops at
-  four terms and it is seventh in the caption.
+- **Search recall, 2 links — FIXED 12 Sep, migration `20260912140000`.**
+  `#awayout` never surfaced *A Way Out* and `#battlefield6` never surfaced
+  *Battlefield 6*, though both are in the catalog: trigram ranking dropped them
+  below the top 5, so promotion could not reach them. Both are now **1.000 and
+  first**. The fix is the index-backed exact-name lookup this entry called for,
+  built as an **expression index** on `replace(match_title, ' ', '')` rather than
+  the generated column proposed here — same lookup, no 89k-row table rewrite, and
+  it also indexes the expression `shelf_term_names_game` was already writing by
+  hand. **That function's capitalised warning that a catalog-wide squashed lookup
+  "is not indexable" and "times out" is now out of date**; the per-game form in it
+  is still correct and should be left alone. The same migration closes both
+  section 4b cases — the write-up of the rule, the collision measurements and the
+  regression evidence are all in its header comment.
+- **Abbreviations, 1 link — FIXED 12 Sep by the same migration, and the diagnosis
+  here was wrong.** This entry blamed the four-term extraction limit, because
+  `#tlou2` sits seventh in the caption. Raising that limit was never necessary:
+  the same caption opens with `#thelastofus2`, which is an exact squashed match on
+  *The Last of Us Part II*'s alternative title, so the link now resolves correctly
+  from its **first** term. **The term limit is still four and there is no longer a
+  measured reason to raise it** — do not "fix" it on the strength of the old note.
 - **Catalog gaps, 2 links.** A brand-new co-op game named only in prose, and a
   caption with no game in it. Correctly unmatched.
 
@@ -905,6 +1081,72 @@ does take ids, but a foreign id and a nonexistent id both return `0`, so it is n
 oracle — asserted directly in section 6 of the verifier. The three trigger functions live
 in `private` and the advisor does not see them at all.
 
+### 12. Vague search — **researched 11 Sep. Not built. Two things needed from Tunde.**
+
+The feature Josh asked for in `docs/decisions-for-josh.md`: *"Feudal Japan, guy with a
+metal arm, really hard"* → Sekiro. **Full write-up in
+[`docs/research/semantic-search.md`](research/semantic-search.md); the measurement
+harness is [`scripts/search-lab/`](../scripts/search-lab/README.md).** Read the doc
+before writing any code here — the obvious implementation was measured and it does
+not work.
+
+**The one number that matters.** A corpus of 7,250 real games was loaded with every
+descriptive field IGDB has, indexed as a weighted `tsvector`, and scored against 77
+real "name that game" queries harvested from r/tipofmyjoystick (the subreddit sets a
+solved post's flair to the game's name, so the answer key is free). Result:
+**recall@1 0%, recall@5 2%.** Not "needs tuning" — zero.
+
+**Why, in one line.** The user types "metal arm"; there is a game called **Metal
+Arms**; it wins forever. The three bridges the feature needs — prosthetic ≈ metal
+arm, hardest ≈ really hard, Sengoku ≈ feudal Japan — are all semantic.
+
+**Two content sources were then added to the index and neither moved the real number
+off 2%:** 166 hand-written descriptions that literally contain the answers, and
+SteamSpy crowd tags (Sekiro: `Souls-like`, `Difficult`, `Ninja`, voted by thousands).
+That is the proof that **content was never the problem and the matching method was**.
+Do not spend time on synonyms, stemming or `ts_rank` weights.
+
+**Do not trust a self-authored eval.** The 38 queries I wrote scored 13 points
+higher than the 77 real ones, because whoever writes the queries reuses catalog
+vocabulary without noticing. Report numbers from `reddit-eval.tsv`.
+
+**Prepared and typechecked, not applied.** Order matters and getting it wrong breaks
+the live catalog: **migration first, then re-seed, then deploy the functions.** The
+mapper now writes five columns that do not exist yet, so deploying the functions
+before `db push` makes every `/search` live-IGDB fallback and every `/share-confirm`
+write fail on an unknown column — silently, from the app's side. Re-seed from zero,
+not resumed: resume is for interruptions, not code changes (§4).
+
+```sh
+!npx supabase db push
+!npm run seed:games     # from zero — the new columns are null on every existing row
+!npm run functions:deploy
+```
+
+What is prepared:
+
+- migration `20260911120000_descriptive_fields.sql` — adds `summary`, `storyline`,
+  `themes`, `perspectives`, `keywords` to `games`. **We already fetch `keywords` and
+  `game_modes` on every seed page, feed them to `deriveSessionFit()` and throw them
+  away**; `summary` and the rest were never requested.
+- `igdb.ts` `GAME_FIELDS` and `mapping.ts` updated to match. `npm run
+  verify:descriptive` proves the round trip against live IGDB on three real games.
+
+**Decision waiting on Josh/Tunde: widen the seed's `game_type` filter.** Measured:
+**2,042 games with ≥5 ratings are excluded** because `game_type = 0 & parent_game =
+null` also removes remakes, remasters, ports and expanded editions. The catalog's
+`Resident Evil 2` is the **1998 original**, not the 2019 remake with 2.4× the
+ratings; `Resident Evil 4` is 2005, not 2023; `Mario Kart 8` is the Wii U one, not
+Deluxe; `Persona 5 Royal`, `The Last of Us Part I` and `Dark Souls: Remastered` are
+absent entirely, as is `Phoenix Wright: Ace Attorney` (314 ratings, `game_type = 10`)
+while all its sequels are present. The cost is **510 exact duplicate titles**. See
+the research doc §5 — the ranking already breaks those ties correctly, with no code
+change.
+
+**Blocked on two API keys**, both cheap or free: **Voyage AI** (200M free
+tokens/month, enough to embed the whole catalog several times over) and **Anthropic**
+with Batch API. Without them the fix can only be predicted, not measured.
+
 ---
 
 ## Traps
@@ -1066,6 +1308,68 @@ These are the ones that cost time if you hit them without warning.
   spec §11 has the detail.
 - **Google Play is not tracked in this repo.** Store accounts are Josh's. The
   12-tester arithmetic is in the spec if anyone needs it.
+
+---
+
+## The search-screen filter header — built and pushed 14 Sep
+
+Paul's search doc (9 Sep, pages 3–5) puts a Release Date pill, a Categories pill
+(genre + device type) and a Sort By portal above the search results. Paul settled
+the one open question on 14 Sep: the Release Date pill is **the one from the
+search doc**, not a shelf filter — so it filters the catalog and it is backend.
+
+Migrations `20260914130000_platform_family_fix.sql` and
+`20260914130100_search_filters_and_sort.sql`, plus the `/search` edge function.
+Verified by `npm run verify:search-filters`. **Not yet pushed or deployed.**
+
+**A latent bug turned up under the Device Type pill and is fixed here.**
+`platforms.family` was derived from a slug regex in `seed-platforms.ts`, whose own
+comment admitted it "only has to be good enough to group the roulette's platform
+picker". Xbox Series X|S has slug `series-x-s` and matched neither `/xbox/` nor
+`/xboxone/`, so the current-generation Xbox — 4,035 catalog rows — was filed under
+no family at all. Distinct games reachable per pill, measured on the live catalog:
+
+| pill | before | after | gained |
+|---|---|---|---|
+| xbox | 6,228 | 7,711 | **+1,483** |
+| nintendo | 13,630 | 14,580 | +950 |
+| mobile | 5,433 | 5,482 | +49 |
+| pc | 73,627 | 73,585 | −42 (Windows Phone/Mobile move to `mobile`) |
+| playstation | 12,171 | 12,171 | 0 (already complete) |
+
+Families are now assigned by IGDB platform id, which is this table's primary key
+precisely because ids are stable. The slugs are what drifted.
+
+**Two of Paul's controls are not fully servable, and both are data, not query.**
+
+- **Four of the 14 genre pills return nothing**: `action`, `souls`, `open-world`,
+  `survival`. IGDB has no "Action" genre; the other three are themes and keywords.
+  `games.themes`, `games.keywords` and `games.summary` exist — added 11 Sep by
+  `20260911120000_descriptive_fields.sql` — but **were never backfilled: 0 of
+  89,123 rows carry any of the three.** **Decided 14 Sep: no re-seed.** A pill the
+  provider has no data for is not invented in the backend; the app reconciles its
+  pill row against `genre_pills`, which it can read directly. Worth noting for
+  whoever revisits the pill set: **Indie is the largest genre in the catalog at
+  50,948 games and Paul's sheet has no pill for it.**
+- **`sort=rating` is thin**: `critic_score` is present on 8,952 of 89,123 rows
+  (10.0%), so nine rows in ten sort on absence rather than merit.
+
+**Two judgement calls made here, flagged to Paul rather than decided by him.**
+`sort=recent` caps at today unless a release window is set explicitly, because
+3,668 future-dated rows would otherwise fill the first page ahead of everything
+released. And `strategy` rolls up TBS, RTS, Tactical and MOBA.
+
+**"Upcoming" means dated future releases — settled 14 Sep.** The 12 Sep finding
+stands (a game IGDB lists with no date is in neither seed pass, 2 such rows in
+89,123) but it is no longer an open question: asked whether the pill should reach
+announced-but-undated games or narrow to dated releases, the answer was dated
+releases. No third seed pass. The label is Paul's to reword.
+
+**The 73k-row 2020s bucket is much less of a problem here than on a browse
+screen.** `shelf_search_games` already ranks by `score + 0.15 · ln(1 + rating
+count) / ln(10001)`, so shovelware only surfaces if it matches the query text and
+still beats anything popular that also matches. No rating floor was added. That
+measurement was taken against `/games/popular`, where it does still bite.
 
 ---
 

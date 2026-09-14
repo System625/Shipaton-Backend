@@ -1,189 +1,94 @@
-# Shelf: Games DB decisions I need from you
+1. Your Steam Web API Key
 
-**For:** Josh
-**From:** Tunde
-**Date:** 4 September 2026
-**Deadline we are working to:** 30 September 2026, 11:45pm PDT
+**Received 14 Sep 2026. Key moved to `.env` as `STEAM_WEB_API_KEY`** — it is not
+kept in this file, which is tracked in git. Registered to the domain
+`getshelv.app` (`STEAM_API_DOMAIN`).
 
-I did a research pass before writing any code, then re-checked every external claim against the vendors' own documentation on 4 September. Below is what I found and the seven things I need you to approve or reject. Everything else I can decide myself.
+2. OpenXBL public key
 
----
+**Received 14 Sep 2026. Moved to `.env` as `OPENXBL_API_KEY`**, same reason.
 
-## First, the thing that worries me most
+> Both keys are server-side only and must never ship in the app bundle. `.env` is
+> gitignored; `.env.example` carries the empty placeholders and the notes. They
+> still need to be set as Supabase secrets before any edge function can read them.
 
-The Shipaton rules say the app's first public version must launch between 1 August and 30 September, and it has to be actually released on the App Store, Google Play, or Samsung Galaxy Store. Built and working is not enough.
+We'll keep $150/hr
 
-Since you shipped for the last RevenueCat hackathon, I am assuming the store accounts and RevenueCat project already exist. One thing I still need you to check, because it bites per app rather than per account:
+Account linking:
+Xbox: yes, you can join
 
-If the Play Console account is a **personal** account created after 13 November 2023, every **new** app needs its own closed test with 12 testers opted in continuously for 14 days before you can apply for production access. Having shipped a previous app does not carry over. Organisation accounts registered to a legal business entity are exempt.
+The memo's premise is right — IGDB stores the Store product ID (9NDXJG3LSP32) and Xbox Live returns a decimal title ID (1777860928). Different namespaces. But the conclusion, "no lookup table at any price," is just not true. Microsoft publishes the bridge.
 
-**Correction, and it is worse than I first told you.** I said 12 September. That number only counted the 14 testing days and left out the two review stages after it. Working backwards from 30 September:
+Microsoft's own support guidance tells people to hit displaycatalog.mp.microsoft.com/v7.0/products?bigIds=<productID> and read XboxTitleId out of the response. The freshdex Xbox tracker does exactly this in production, pulling xboxTitleId from the catalog's AlternateIds array to backfill title IDs. And the endpoint supports reverse lookups by alternate ID — the documented pattern is products/lookup?market=US&languages=en-US&alternateId=PackageFamilyName&value=<PFN>, and XboxTitleId is an alternate ID type.
 
-| Step | Duration | Latest start |
-|---|---|---|
-| 12 testers opted in continuously | 14 days | **6 September** |
-| Request production access, Google reviews | "7 days or less" | 20 September |
-| Publish, app review | 2 to 3 days | 27 September |
+So the join is:
 
-So the real cutoff is about **6 September, which is Saturday**, with no slack anywhere in the chain. At 12 September the path does not close at all if Google takes its full review week.
+IGDB external_games (microsoft) → bigId
+      ↓  DisplayCatalog, batched
+XboxTitleId (decimal)
+      ↓  exact match
+OpenXBL titleHistory titleId
 
-One thing I overstated: Google does not formally require that all 12 testers actively use the app. It asks you to describe whether "testers used all available app features" in the production access questionnaire. Real, but softer than a hard check.
+And this is a build-once batch job, not a per-user call. Take every IGDB game with a microsoft external ID, page through DisplayCatalog with bigIds= comma-batched, store titleId → igdb_id. A few hours of compute, then imports are a hash lookup forever.
 
-For contrast, iOS review runs 2 to 5 days for a new app, so that path stays comfortable.
+Three real caveats, none fatal:
 
-**Please confirm today:** is the Play account personal or organisation? If it is an organisation, or a personal account created before 13 November 2023, none of this applies and we are fine. If not, we almost certainly ship iOS and treat Android as a stretch, and I would rather we decide that now than discover it on the 25th.
+DisplayCatalog is unofficial and Microsoft says it can change. So is OpenXBL, which you're already depending on. Same risk class, no new exposure.
+It's many-to-many. One bigId can carry several title IDs across 360/One/Series, and editions and regions produce multiple bigIds per game. Don't force a unique constraint — store the edges, resolve to the IGDB parent.
+PC-only Store products won't have an XboxTitleId at all. Fine, they won't appear in Xbox Live title history either.
 
----
+Xbox moves from "build fourth, match on name" to "build second, deterministic." The actual limiter isn't the join, it's how many IGDB games carry a microsoft external ID in the first place — measure that before you re-rank the order. That's the number the memo should have reported and didn't.
 
-## Decision 1: IGDB as the game data source
 
-**Correction. You approved RAWG on my recommendation and I got that wrong. Please re-approve.**
+Three answers.
 
-I told you IGDB's commercial terms were unresolved. I was working off a forum post from 2020. When that got challenged I went and read IGDB's current documentation, and it says the opposite. Quoting their FAQ directly:
+Xbox — go, and it jumps ahead of PSN
 
-> **I want to use the API for a commercial project, is it allowed?**
-> Yes, we offer commercial partnerships for users looking to integrate the API in monetized products.
+One extra thing to do before Posi starts: run the batch job first and measure it. Pull every IGDB game with a microsoft external ID, page through DisplayCatalog, count how many actually return an XboxTitleId. That number tells you your Xbox ceiling. If it's above 70% you're in good shape; below 50% and you're back to name matching as the primary path rather than the fallback. Either way you know before you build the UI, and the job is a few hours.
 
-> **What is the price of the API?**
-> The API is free for both non-commercial and commercial projects.
+Do it as a build-time artifact checked into the repo, not a runtime dependency. If DisplayCatalog changes or rate-limits you mid-hackathon, your map still works.
 
-> **Am I allowed to store/cache the data locally?**
-> Yes. In fact, we prefer if you store and serve the data to your end users.
+Android — here's the actual build
 
-So the reason I picked RAWG has evaporated, and on the merits IGDB is better for us:
+Four steps, roughly a day total.
 
-| | IGDB | RAWG |
-|---|---|---|
-| Cost | Free, including commercial | $149/month for commercial |
-| Monthly request cap | None, 4 requests/second instead | 20,000 free, 50,000 paid |
-| Storing data on our servers | Encouraged, formally once we are partners | Prohibited |
-| Bulk data dumps | Every 24 hours, partners only | None |
-| If we stop using them | We keep all the data | n/a |
-| Time to finish a game | Three estimates plus a confidence count | One averaged number |
-| Cover art | Real box art | A screenshot |
-| PC system requirements | None | Yes |
+1. Build the manifest list from IGDB, not from a generic top-games list.
 
-The 20,000 requests a month I flagged as a worry in my last message is a RAWG limit. It disappears entirely.
+This is the part that makes the 17% number stop mattering. You control what goes in <queries>, so build it as: top mobile games by installs, cross-referenced against IGDB's android external IDs. Where IGDB has the package, you get cover art and metadata free. Where it doesn't, you still include the package — it just renders locally. Keep it around 500 entries; the manifest is parsed at install time and you don't want to bloat it.
 
-Two corrections to my own table, since I want you deciding on accurate numbers. The daily data dumps are **partners only**, so we do not get them on day one, and I have changed the plan to seed straight from the API instead, which takes about a minute either way. And RAWG has PC system requirements that IGDB simply does not publish, so we lose that one field. Nothing in the cut scope uses it.
+2. Detect.
 
-**One thing you need to do, today.** Commercial use runs through a partnership, which means emailing **partner@igdb.com**. It is free. There is no published turnaround anywhere, so assume they may not reply before the deadline.
+Loop the list, getPackageInfo on each, no permission required. For every hit you get from ApplicationInfo: the app label, the icon, firstInstallTime, lastUpdateTime, and the category flag.
 
-I want to be straight about why this matters more than I first said. IGDB's FAQ says caching is fine. But their Getting Started page says the API is free for **non-commercial** use under the Twitch Developer Agreement, and that agreement says not to store their data for more than 24 hours without written authorization. Our whole design is a stored catalog, and Shelf has a paywall, so we are a commercial product from day one. The partnership is what makes the architecture legitimate, not just polite.
+3. Render everything, resolve what you can.
 
-In practice: their FAQ and that agreement genuinely disagree, so this is ambiguity rather than a clear breach, and the risk of anything happening inside a 30 day contest is low. The exposure is later, if Shelf wins something and keeps running on data we have no documented right to store. That is why the email should be dated before we ship.
+package found
+  ├─ in IGDB  → cover art, release date, genres, full game row
+  └─ not      → device label + device icon, flagged local_only
 
-We are not blocked while we wait. The API is free and available immediately with a Twitch account, and it gives us every field we need, so building starts today either way. Both providers require visible attribution, so that part of the design does not change.
+An unmatched game still gets a row, a status, and a place in the library. It just has a launcher icon instead of box art. Nobody will care. Hiding it is what would look broken.
 
-**There is also nowhere better to go.** I researched the alternatives properly. Giant Bomb's API is offline entirely since they split from Fandom, with no timeline to restore it. MobyGames ended free access and now starts around $100 a month for a slower tier. RAWG is the only real fallback and costs $149 a month for commercial use, with one averaged playtime number instead of three and screenshots instead of box art. So the choice is not IGDB versus something similar. It is IGDB or pay more for less.
+4. Usage stats, opt-in, after they've used the app.
 
-**Approve or reject.**
+PACKAGE_USAGE_STATS is granted in system settings, not a runtime dialog, so it needs an in-app explainer screen before you fire the intent. Read only the packages you already matched. Never gate anything behind it.
 
----
+That gives you "we found 14 games on your phone, and you've put 40 hours into Clash Royale this month." No competitor has either half.
 
-## Decision 2: I start the backend
+One thing to be deliberate about: this is your Galaxy Store pitch. Samsung isn't going to feature you for a foldable layout alone — every entrant will have one. "The only game tracker that sees the games on your phone" is an actual reason.
 
-**My recommendation: yes, and it is unavoidable.**
+PlayStation — buildable, just last
 
-We cannot put API credentials inside the app. Anyone can pull them out of the bundle. IGDB is explicit about this in their own docs: they do not allow the app to call them directly, and tell you to put a backend in between. So this is settled by the provider, not just by preference.
+I wasn't saying skip it. I was saying the join is name-based and the data is trophies, not ownership.
 
-We also already promise sync as a Plus feature on the paywall, and friends' lists need accounts. All three land on the same server.
+What you get: getUserTitles returns trophy titles with clean retail names and completion percentages. Name-match those against IGDB with normalization — strip trademark symbols, edition suffixes, platform tags, trailing subtitles — and you'll land most of a popularity-weighted library. The tail misses, and the manual-fix bucket catches those.
 
-I am proposing **Supabase**: Postgres for the game catalog, built in auth, and edge functions to hold the API key. It also has good fuzzy text matching built in, which we need for the share feature below.
+Two things to be honest about in the UI, because users will otherwise think you're broken:
 
-**One cost to approve with it.** Supabase's free plan pauses a project after a week of inactivity. Judging runs to 22 October, and a paused backend means judges open Shelf and it does not work. That is a $25/month plan for October, or we commit to keeping it awake ourselves. I would rather just pay it for the judging window.
+It shows games you've earned trophies in, not games you own. Installed-and-never-played won't appear.
+The PS4 and PS5 versions of a game are separate trophy sets. Dedupe against the IGDB parent or people see doubles.
 
-**Approve or reject.** If Sola would rather own this, say so now rather than in two weeks.
+The real reason it goes last isn't the matching — it's the NPSSO. Leaving the app, signing into Sony in a browser, finding a 64-character string in raw JSON, copying it without the quotes, coming back. On a phone. Then again in two months. That flow will have terrible completion rates no matter how well you build it.
 
----
+Ship it behind an "Advanced" disclosure with clipboard detection when the user returns, and immediate validation so a bad paste fails in a second. And exchange the NPSSO for tokens in the same request — never store it.
 
-## Decision 3: Cut the feature list
 
-**My recommendation: build three things properly.**
-
-We listed eighteen features. We have 26 days, no backend yet, and the app has to be live on a store at the end. That list is a six month roadmap.
-
-Of the eighteen, most are things a dozen existing apps already do. Wishlists, status tracking, and search will not win a category.
-
-The three that are actually ours:
-
-1. See a game on TikTok, hit share, it lands in your backlog with the link attached
-2. Tell it "1 hour, PS5" and it picks something from your list
-3. Finish a game, rate it, get a card you can post
-
-That is the app. Everything else is supporting cast.
-
-**Approve or reject.** I am asking because the games database looks quite different depending on the answer, and I would rather build the right one once.
-
----
-
-## Decision 4: The roulette needs data we do not have
-
-Right now every game in the app stores one platform as plain text. Elden Ring is saved as "PS5". In reality it is on six platforms.
-
-"1 hour, PS5" needs two things we do not currently store: which platforms a game is actually on, and roughly how long it takes to finish. IGDB gives us both, so this is fixable, but it means changing the shape of the data Sola already built against.
-
-**Approve or reject:** I redesign the game data model rather than working behind the existing one. This will require some coordination with Sola.
-
----
-
-## Decision 5: The share feature will ask before adding
-
-I tested this rather than assuming it works.
-
-When someone shares a YouTube link, we get a clean title back. A real example: "ELDEN RING - Official Gameplay Reveal". Easy to match.
-
-When someone shares a TikTok, we get the whole caption. A real example: "Scramble up ur name & I'll try to guess it😍❤️ #foryoupage #petsoftiktok #aesthetic". Gaming captions look the same way, something like "this boss took me 3 hours 💀 #eldenring".
-
-We can usually pull a game name out of that. We cannot always be right.
-
-**My recommendation:** when someone shares, we guess, then show them what we think it is and let them confirm or correct it with one tap. Silently adding the wrong game to someone's backlog is the fastest way to make them stop trusting the feature, and this feature is the whole pitch.
-
-If we cannot work out the game at all, we still save the link so nothing they shared is lost.
-
-**Approve or reject.**
-
----
-
-## Decision 6: We lose Expo Go
-
-To receive shares from other apps, we need a library that requires a real build rather than the Expo Go app. It supports our exact Expo version, so this is not a blocker, but it does change how everyone runs the project day to day.
-
-Better to do this in week one than on 25 September.
-
-**Approve or reject.**
-
----
-
-## Decision 7: The roulette needs two inputs, not one
-
-This one came out of a good question about the "1 hour" idea.
-
-"I have 1 hour" means an hour free tonight. The only data any games database has is how long a game takes to **finish**. Those are different things on completely different scales.
-
-Filter for games beatable in an hour and you get Journey. At four hours you add Portal and Firewatch. You have to reach about ten hours before there is a real pool to pick from.
-
-Worse, everything under four hours is the same kind of game, short narrative indies. So the roulette would deal the same three titles to everybody forever, and would never surface the 55 hour game you have 40 hours left in. Anyone whose backlog is mostly big games gets an empty roll every time.
-
-This is not a threshold to tune, and switching to IGDB does not fix it. It is two different questions sharing the word "hours".
-
-**My recommendation: split them.**
-
-- **"How long have you got?"** does not look at how long the game takes at all. It uses what kind of game it is. Roguelikes, racing, sports, fighting and puzzle games are built out of short runs. Long story RPGs are not. Balatro is the best 45 minute game in Sola's mock catalog and its playtime is effectively infinite, which is the clearest proof that duration was never the right input.
-
-  Worth knowing: this half of the roulette runs on genre and keyword data that every provider has, so it survives even if we ever have to change provider. Only the size question depends on IGDB's better playtime data.
-- **"How big a game are you after?"** with Quick, Medium and Epic. This is where time to finish genuinely works.
-
-The cost of saying yes: the roulette becomes two taps instead of one, and your pitch line changes. "Tell it 1 hour and PS5" becomes closer to "tell it how long you have got and what you are in the mood for".
-
-**Approve or reject.** This is the last thing blocking the roulette.
-
----
-
-## What I do once you answer
-
-1. The games model and share pipeline spec is already written and ready to build from
-2. Stand up Supabase and the IGDB sync
-3. Hand Sola the contracts so the app screens can be built against them
-
-Two things need you rather than me, today: the Play account question at the top, and the email to partner@igdb.com.

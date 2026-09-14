@@ -7,20 +7,26 @@
 # Every endpoint below is deployed. /share-resolve and /share-confirm went live on
 # 8 September 2026 and are checked by `npm run verify:share` (55 checks);
 # /games/popular-with-friends on 9 September, checked by
-# `npm run verify:friends-popular` (31); the rest by `npm run verify:functions` and
+# `npm run verify:friends-popular` (31); the four /steam-* endpoints on 14 September,
+# checked by `npm run verify:linking` (61, including a real 4,652-game import through
+# the deployed function); the rest by `npm run verify:functions` and
 # `npm run verify:roulette`. Nothing here is aspirational.
 
 openapi: 3.1.0
 
 info:
   title: Shelf backend API
-  version: "2026-09-09.1"
+  version: "2026-09-14.1"
   description: |
     Games catalog, share ingestion and roulette for the Shelf app.
 
     Supabase Edge Functions over a Postgres catalog of 89,117 games seeded from IGDB.
 
-    **Authentication is required on every endpoint.** There is no public read.
+    **Authentication is required on every endpoint but one.** There is no public
+    read. The single exception is `/steam-link-callback`, which Steam's servers
+    redirect the user's browser to and which therefore cannot carry a JWT; it trusts
+    nothing in the request and verifies the sign-in with Steam directly. The app
+    never calls it.
     The caller sends a Supabase user access token; the function rebuilds a Supabase
     client from that exact token, so row-level security applies to everything it
     touches. No endpoint ever uses the service role key to read user data.
@@ -35,14 +41,24 @@ info:
     aggregate of external critic scores; it is not Metacritic and must not be
     labelled as such.
 
+    **Connecting a platform is not a way to sign in.** Steam, Xbox and PlayStation
+    are connections made *inside* an already-signed-in Prysm account, never
+    authentication methods. That is what keeps App Store guideline 4.8 — and with it
+    mandatory Sign in with Apple — out of scope for the whole app.
+
     **This file does not cover the whole backend.** The friends feed, the
-    notification inbox and the library are PostgREST tables and RPCs under
-    row-level security, not HTTP endpoints — there is no edge function to describe,
-    so they are absent here by design rather than by omission. They are documented
+    notification inbox, the library and the wishlist are PostgREST tables and RPCs
+    under row-level security, not HTTP endpoints — there is no edge function to
+    describe, so they are absent here by design rather than by omission. They are documented
     in the published API reference, and their migrations are the source of truth.
     Only `/games/popular-with-friends` crosses over: it wraps an RPC in an endpoint
     so the response carries the derived `abbreviation` and `colorKey` fields, which
     a direct RPC call cannot.
+
+    Disconnecting a platform is in that PostgREST-and-RPC category too:
+    `rpc('shelf_disconnect_platform', { p_platform: 'steam' })`. It deletes the
+    connection and every imported row the user never touched, keeps anything they
+    re-statused, rated or annotated, and returns how many rows it removed.
 
 servers:
   - url: https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1
@@ -85,9 +101,18 @@ paths:
         results are served anyway. So this endpoint does not return 502 when IGDB
         is down — it returns the catalog's best effort.
 
-        Results are ranked, not filtered. A close-but-wrong title can outrank the
-        one the user meant on short queries, which is why the share flow makes the
-        user confirm.
+        Ranking and filtering are different things here. Without
+        `releaseFrom`/`releaseTo`, `genre` or `device` the endpoint ranks and
+        never excludes: a close-but-wrong title can outrank the one the user
+        meant on short queries, which is why the share flow makes the user
+        confirm. Those four parameters do exclude, and they are applied inside
+        the query, before the 10-row limit — filtering the response instead would
+        leave a near-empty page.
+
+        The live IGDB lookup runs only for an unfiltered `best_match` query. Under
+        a filter a thin result usually means the filter is working, and `score` is
+        no longer the ordering key once a sort is chosen, so the 0.55 threshold
+        would be reading a number that no longer means what it means here.
 
         Never returns 404. No match is `200 []`.
       parameters:
@@ -102,11 +127,113 @@ paths:
             title:   { value: elden ring }
             abbrev:  { value: botw }
             tooShort: { value: e, summary: "Returns [] — under the 2-character floor" }
+        - name: releaseFrom
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: >
+            Inclusive lower bound on release date, `YYYY-MM-DD`. Omit for
+            unbounded. Two dates rather than named eras (`2020s`) on purpose: the
+            app owns the bucket labels and their boundaries, so moving a boundary
+            is an app release, not a migration.
+
+            Undated games match no date filter, including "Upcoming". Settled
+            14 Sep: "Upcoming" means dated future releases (3,668 of them), not
+            announced-but-undated games — IGDB's undated titles are excluded from
+            both seed passes on purpose and only 2 such rows exist in 89,123.
+          examples:
+            decade:   { value: "2020-01-01", summary: "Paul's 2020s bucket, with releaseTo=2029-12-31" }
+            upcoming: { value: "2026-09-15", summary: "Upcoming — tomorrow onwards, releaseTo omitted" }
+        - name: releaseTo
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: >
+            Inclusive upper bound on release date, `YYYY-MM-DD`. Omit for
+            unbounded. `releaseFrom` after `releaseTo` is a 400.
+        - name: genre
+          in: query
+          required: false
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+          description: >
+            Genre pill slugs. Repeat the parameter or comma-separate:
+            `?genre=rpg&genre=puzzle` and `?genre=rpg,puzzle` are the same query.
+            Multiple pills are an OR. Backend-owned vocabulary, because the
+            rollups are a fact about IGDB's data rather than a UI choice — the app
+            cannot know that `strategy` has to absorb `Turn-based strategy (TBS)`,
+            `Real Time Strategy (RTS)`, `Tactical` and `MOBA`.
+
+            Served: `adventure`, `rpg`, `fps`, `strategy`, `simulation`, `sports`,
+            `racing`, `fighting`, `platformer`, `puzzle`.
+
+            NOT SERVED, and they return `200 []` rather than an error: `action`,
+            `souls`, `open-world`, `survival`. IGDB has no "Action" genre, and the
+            other three are themes and keywords — columns that exist but hold
+            nothing for any of the 89,123 catalog rows. Decided 14 Sep not to
+            re-seed for them: a pill the provider has no data for is not invented
+            here, and the app reconciles its pill row instead.
+
+            The vocabulary is queryable rather than hardcoded — the `genre_pills`
+            table is selectable by any authenticated session, so
+            `select distinct pill` is the live list of slugs that filter
+            something. Build the pill row from that and an unservable pill cannot
+            ship.
+          examples:
+            one:  { value: [rpg] }
+            many: { value: [rpg, puzzle] }
+        - name: device
+          in: query
+          required: false
+          schema:
+            type: array
+            items: { type: string, enum: [playstation, xbox, nintendo, pc, mobile] }
+          style: form
+          explode: true
+          description: >
+            Device Type pill. Repeat or comma-separate; multiple values are an OR.
+            An unrecognised value is a 400 — there are only five, so a typo means
+            the app is wrong.
+
+            4,094 catalog rows reach none of the five (retro, arcade, VR, browser,
+            Stadia) and are invisible to this filter by design.
+          examples:
+            one:  { value: [xbox] }
+            many: { value: [xbox, pc] }
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [best_match, popular, rating, recent, alpha]
+            default: best_match
+          description: >
+            `best_match` (default) is the existing ranking and is unchanged.
+            `popular` is rating count and takes no direction. `rating` is critic
+            score — thin, see the caveat below. `recent` is release date and
+            excludes unreleased games unless a release window is set explicitly.
+            `alpha` is title.
+
+            CAVEAT ON `rating`: `criticScore` is present on 8,952 of 89,123 rows
+            (10.0%). Sorted by it, nine rows in ten fall to the bottom on absence
+            rather than on merit, ordered only by rating count. It is honest for
+            the games that have a score and close to arbitrary for the rest.
+          examples:
+            recent: { value: recent }
+        - name: sortDir
+          in: query
+          required: false
+          schema: { type: string, enum: [asc, desc], default: desc }
+          description: >
+            Applies to `rating`, `recent` and `alpha`. Ignored for `best_match`
+            and `popular` — per the design, Most Popular takes no order.
       responses:
         "200":
           description: >
-            Up to 10 matches, best first. An empty array is a normal, successful
-            answer, not an error.
+            Up to 10 matches, in the requested `sort` order (best first by
+            default). An empty array is a normal, successful answer, not an
+            error — and under a filter it is often the correct one.
           content:
             application/json:
               schema:
@@ -646,6 +773,242 @@ paths:
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "500": { $ref: "#/components/responses/ServerError" }
 
+  /steam-link-start:
+    post:
+      tags: [account linking]
+      operationId: startSteamLink
+      summary: "Begin connecting a Steam account"
+      description: |
+        Deployed and verified 14 September 2026 (`npm run verify:linking`).
+
+        Step 1 of three. Open `redirectUrl` in a browser; the user signs in on
+        Steam's own page; Steam redirects to `/steam-link-callback`, which 302s
+        back into the app; the app then calls `/steam-link-finish` with `nonce`.
+
+        **This is a connection, never a sign-in.** The request is authenticated, so
+        a Prysm account already exists. That is what keeps App Store guideline 4.8
+        out of scope — the moment "Sign in with Steam" becomes a way to *create* an
+        account, Sign in with Apple is pulled in for the whole app.
+
+        Valve requires one of their supplied "Sign in through Steam" button images
+        on the button that leads here.
+
+        The `nonce` is 32 random bytes, single-use, and expires in ten minutes.
+      responses:
+        "200":
+          description: Where to send the user, and the nonce to come back with.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [redirectUrl, nonce]
+                properties:
+                  redirectUrl:
+                    type: string
+                    format: uri
+                    description: >
+                      An OpenID 2.0 `checkid_setup` URL on
+                      `steamcommunity.com/openid/login`.
+                  nonce:
+                    type: string
+                    description: Pass to `/steam-link-finish` after the redirect returns.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /steam-link-callback:
+    get:
+      tags: [account linking]
+      operationId: steamLinkCallback
+      summary: "Where Steam sends the user back (not called by the app)"
+      description: |
+        Deployed and verified 14 September 2026.
+
+        **The app never calls this.** Steam's servers redirect the user's browser
+        here after sign-in. It is listed so nobody is surprised by the one endpoint
+        in this API that takes no `Authorization` header — it is deployed with
+        `--no-verify-jwt`, because a redirect from Steam cannot carry a JWT and
+        there is no way to make it.
+
+        It is safe because it trusts nothing in the request. Every `openid.*`
+        parameter is attacker-controlled until Steam confirms the signature, so the
+        handler performs an OpenID `check_authentication` round trip back to Steam
+        and accepts the SteamID64 only if Steam answers `is_valid:true`. Reading the
+        id straight out of `openid.claimed_id` would be account takeover by
+        impersonation. The single-use nonce, minted by an authenticated
+        `/steam-link-start` call, is what names the user.
+
+        It creates no connection. It records the verified id against the nonce and
+        redirects; `/steam-link-finish` writes the connection under the user's own
+        JWT.
+      security: []
+      parameters:
+        - name: nonce
+          in: query
+          required: true
+          schema: { type: string }
+        - name: "openid.*"
+          in: query
+          required: true
+          schema: { type: string }
+          description: The OpenID 2.0 response parameters, passed through verbatim by Steam.
+      responses:
+        "302":
+          description: |
+            Always a redirect into the app, never a rendered page.
+            `Location` is `APP_LINK_RETURN_URL` (`prysm://link/steam`) plus
+            `?status=ok|failed|expired&nonce=...`. Only `ok` should lead the app to
+            call `/steam-link-finish`.
+          headers:
+            Location:
+              schema: { type: string }
+              example: "prysm://link/steam?status=ok&nonce=DVOLAh9aF9C2LyWKOdGSnoVlFN4CtUC8QksYfimLm28"
+        "400":
+          description: No nonce in the query string.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: missing nonce }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /steam-link-finish:
+    post:
+      tags: [account linking]
+      operationId: finishSteamLink
+      summary: "Turn a verified nonce into the connection"
+      description: |
+        Deployed and verified 14 September 2026 (`npm run verify:linking`).
+
+        Step 3 of three, called when the app is back in the foreground with the
+        `status=ok` redirect. The write happens under the caller's own JWT, so RLS —
+        not this code — is what guarantees the connection lands on the right
+        account: a nonce belonging to someone else is simply not visible, and the
+        lookup 404s.
+
+        Display name and avatar are fetched from Steam as a convenience and are not
+        fatal; a connection Steam has already verified is not refused over a missing
+        avatar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nonce]
+              properties:
+                nonce:
+                  type: string
+                  description: The nonce from `/steam-link-start`.
+      responses:
+        "200":
+          description: The stored connection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlatformAccount" }
+        "400":
+          description: Body was not JSON, or `nonce` was missing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: nonce is required }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No such link request for this user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: link request not found }
+        "409":
+          description: >
+            The nonce was already used, or Steam never confirmed the sign-in, or
+            that Steam account is already linked to a different Prysm account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: steam did not confirm this sign-in }
+        "410":
+          description: The link request expired. Ten minutes is the window.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+              example: { error: link request expired }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
+  /steam-import:
+    post:
+      tags: [account linking]
+      operationId: importSteamLibrary
+      summary: "Pull the linked Steam library into the user's shelf"
+      description: |
+        Deployed and verified 14 September 2026 (`npm run verify:linking`), including
+        a real 4,652-game library end to end in **3.4 seconds**: one Steam call, one
+        resolve, one write, and **zero IGDB round trips** — the whole point of the
+        `game_external_ids` map.
+
+        **`total` and `matched` always differ, and how much depends on the account.**
+        Measured against that real library: **38.6%** of everything owned resolved,
+        but **83.1%** of everything ever played and **85.0%** of the top 20 by
+        playtime. Owned and played are very different sets on Steam — bundles and
+        giveaways pile up apps nobody opens — and every miss is in the never-opened
+        part. Some of the gap is also correct behaviour: Blender, Wallpaper Engine
+        and Source Filmmaker are not games.
+
+        So show both numbers, and lead with playtime: the top of a playtime-sorted
+        list is ~85% complete at any library size. "Added 412 of your 468 Steam
+        games" is honest; "Done" invites the user to go hunting.
+
+        **The paywall goes after this response, never before it.** Imported rows
+        count against the 50-game free tier and this endpoint deliberately does not
+        enforce that.
+
+        Re-running is safe and is the sync path. It fills blanks and never
+        relitigates the shelf: a status, rating or note the user set is never
+        overwritten. Editions that collapse onto one catalog game (Skyrim + Skyrim
+        Special Edition) are deduped before writing and their playtime summed —
+        1,797 appids became 1,656 rows in the verified run.
+      responses:
+        "200":
+          description: What the import found and what it did.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            Either no Steam account is linked (`{"error": "no steam account linked"}`),
+            or — far more often — the user's **Game details** privacy is not Public.
+
+            That second case is the predicted top support complaint and Steam makes
+            it silent: a private profile answers HTTP 200 with `{"response":{}}`, no
+            `games` array and no `game_count`, which is indistinguishable from a
+            successful import of zero games. It is detected and reported with a
+            distinct body carrying `fixUrl` — render that as a button, not text.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/FunctionError"
+                  - type: object
+                    required: [error, message, fixUrl]
+                    properties:
+                      error: { type: string, enum: [steam_profile_private] }
+                      message: { type: string }
+                      fixUrl: { type: string, format: uri }
+              example:
+                error: steam_profile_private
+                message: >
+                  Your Steam game details are private, so Steam returns an empty
+                  library. Set Game details to Public and try again.
+                fixUrl: "https://steamcommunity.com/my/edit/settings"
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "502":
+          description: Steam's API was unreachable or rejected our key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunctionError" }
+        "500": { $ref: "#/components/responses/ServerError" }
+
 components:
   securitySchemes:
     userToken:
@@ -911,8 +1274,92 @@ components:
           description: The TikTok or YouTube link the game came from.
         source_kind:
           type: string
-          enum: [tiktok, youtube, search, manual]
+          enum: [tiktok, youtube, search, manual, steam, xbox, psn]
           nullable: true
-          description: Derived from the intake's provider; anything not tiktok/youtube becomes `manual`.
+          description: >
+            Where the row came from. For /share-confirm it is derived from the
+            intake's provider and anything not tiktok/youtube becomes `manual`.
+            **Widened 14 Sep 2026** with `steam`, `xbox` and `psn` for imported rows
+            — if a client types this as a closed union, imported rows fall through.
+            `psn` is included although PlayStation is not built, so tolerating it
+            now costs nothing later.
+        imported_uid:
+          type: string
+          nullable: true
+          description: >
+            The store id this row was imported from (a Steam appid, for example).
+            Added 14 Sep 2026. Clients can ignore it; it exists so a disconnect
+            knows exactly what an import created.
         added_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
+
+    PlatformAccount:
+      type: object
+      description: >
+        A row of `platform_accounts` — a connected platform, owner-only under RLS.
+        **Nothing secret is stored here**, and that is deliberate rather than
+        incidental: Steam's OpenID returns an identity and no token at all.
+      required: [user_id, platform, external_id, linked_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        platform:
+          type: string
+          enum: [steam, xbox]
+          description: >
+            `psn` is absent because PlayStation is not built. It goes in when it
+            ships, so this list never claims a connection that does not exist.
+        external_id:
+          type: string
+          description: SteamID64 for Steam, XUID for Xbox. A public identifier, not a credential.
+        display_name: { type: string, nullable: true }
+        avatar_url: { type: string, nullable: true }
+        linked_at: { type: string, format: date-time }
+        last_import_at: { type: string, format: date-time, nullable: true }
+        last_import_total:
+          type: integer
+          nullable: true
+          description: Apps the last import saw.
+        last_import_matched:
+          type: integer
+          nullable: true
+          description: >
+            How many reached our catalog. Deliberately stored alongside the total so
+            the app can say "412 of 468" without re-running anything.
+
+    ImportResult:
+      type: object
+      description: What /steam-import found and what it wrote.
+      required: [total, matched, inserted, updated, viaParent, unmatched]
+      properties:
+        total:
+          type: integer
+          description: Apps the platform returned. 4,652 in the verified run.
+        matched:
+          type: integer
+          description: >
+            How many resolved to a catalog game. 1,797 in the verified run — see the
+            endpoint description for why this is much lower than `total` on large
+            accounts and why that is mostly correct.
+        inserted:
+          type: integer
+          description: >
+            Rows added. Lower than `matched` because editions collapse onto one game:
+            1,656 rows from 1,797 appids in the verified run.
+        updated:
+          type: integer
+          description: >
+            Rows already present and left alone apart from provenance and, on rows
+            the import owns, playtime. A status, rating or note the user set is never
+            overwritten.
+        viaParent:
+          type: integer
+          description: >
+            How many resolved only by following IGDB's `parent_game` — i.e. the user
+            owns an edition or remaster and we gave them the base game.
+        unmatched:
+          type: array
+          items: { type: string }
+          description: >
+            Store ids that reached nothing, **capped at 50**. It is a sample for
+            debugging, not a complete list; a large library can miss thousands.
+          maxItems: 50

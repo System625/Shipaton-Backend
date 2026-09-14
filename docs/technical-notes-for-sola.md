@@ -1,524 +1,666 @@
-# Shelf: Games DB technical notes
+# Shelf backend: notes for Sola
 
 **For:** Sola
 **From:** Tunde
-**Date:** 4 September 2026
+**Date:** 11 September 2026
 
-I picked up the games database and how new games get added. This is what I found reading your scaffolding, plus what I think has to change. Nothing here is decided. Josh has the approval calls and I have sent him a separate doc with the seven that matter. Treat this as a heads up so nothing lands on you as a surprise.
+This replaces every earlier version of this file. Anything from the 4, 7 and 8 September
+notes that still matters is repeated below; everything else was stale and is gone.
 
-Updated 4 September after a verification pass against IGDB's own docs. Two things below changed as a result, both marked.
+I read the app at `akintewe/revenue-cat-game` through commit `cfa0909` (10 Sep, "Sync
+library with the real backend"). The library sync is exactly right: PostgREST, scoped by
+RLS, optimistic writes with rollback, and `/games/popular` replacing the 15-query
+workaround. It unblocks more than it looks like it does, and section 3 covers what.
 
-Your structure made this easy to pick up. `searchCatalog` and `findCatalogGame` are exactly the right seam and I am aiming to keep them.
+Every status code and payload below was captured from the live project today, not
+written from the source.
+
+**Base URL for edge functions:** `https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1`
+**Full reference:** `docs/openapi.yaml` in the backend repo, and the Shelf API Reference
+page. The wishlist isn't in either yet, so section 2 of this file is its reference for
+now.
 
 ---
 
-# Update, 8 September: the share flow is live, and two things you are working around already exist
+## 1. Where everything stands
 
-**This section is the newest and wins over both dated sections below.** I read your
-`Backend Handoff — Prysm` artifact and went through the app repo at
-`akintewe/revenue-cat-game` (through commit `7990f0f`). Auth, the Supabase client and
-the live search wiring all look right — `functions.invoke` with the session token is
-exactly the intended seam.
+Everything on the backend is live and verified. What's left is app wiring.
 
-## Two of the five things you flagged are already built
+| Feature | How the app calls it | In the app at `cfa0909` |
+|---|---|---|
+| Search | `GET /search?q=` | Wired |
+| One game | `GET /games/<uuid>` | Wired |
+| Popular | `GET /games/popular?limit=&offset=` | Wired |
+| Library | PostgREST: `library_entries` | Wired, 10 Sep |
+| **Wishlist ("Saved")** | **PostgREST: `wishlist_entries`** | **New today, not wired. Section 2** |
+| Roulette | `GET /roulette?platform=&hours=&size=` | No screen yet. Section 3 |
+| Popular with friends | `GET /games/popular-with-friends` | Not wired. Section 3 |
+| Friends feed | PostgREST tables + `shelf_feed`, `shelf_profile_stats` | `FRIEND_POSTS` mock. Section 4 |
+| Notification inbox | `shelf_notifications` and two more RPCs | Bell has no `onPress`. Section 4 |
+| Share a link | `POST /share-resolve`, `POST /share-confirm` | Not wired, no `expo-share-intent` yet. Section 5 |
+| **Finish card** | **Nothing — no endpoint, no migration** | **Blocked on three columns missing from your select. Section 7** |
 
-Your doc says it is client-observable only, and that is where the gap comes from: you
-were reading a version of the API reference that predates 8 September. My fault, not
-yours — the link pins viewers to the version they were shared, and I did not move the
-pin after updating it. Tunde is moving it now.
+Two conventions that hold everywhere:
 
-| Your handoff says | Actually |
+- **Edge functions return camelCase `CatalogGame`.** PostgREST tables return the row
+  **as stored, in snake_case** (`game_id`, `added_at`). You already handle this in
+  `remoteLibrary.ts`.
+- **Every call needs a signed-in user.** Functions 401 without a token; tables return
+  nothing to a signed-out client.
+
+---
+
+## 2. New today: the wishlist is on the server
+
+"Explore Saved" and the Wishlist tab still read `useWishlistStore`, which is
+AsyncStorage only. So saved games are lost on reinstall, never reach a second device,
+and are **shared by every account that signs in on the same phone**. That last one is a
+real bug now that accounts exist. There is now a table for it, and it works exactly
+like the library: no edge function, `supabase.from()` directly, owner-only by RLS.
+
+### Why a separate table and not a fifth library status
+
+- `fetchLibraryEntries()` reads every `library_entries` row with no status filter, and
+  `GameStatus` has four values. A `'wishlist'` row would land in the Library as a status
+  your screens can't render.
+- The Library counts rows against `FREE_TIER_GAME_LIMIT`. Saving a game you don't own
+  would use up the free tier.
+- Your UI lets a game be saved *and* in the library at once. A status can't be both.
+
+### The table
+
+| Column | Type | Notes |
+|---|---|---|
+| `user_id` | uuid | **Defaults to the signed-in user.** Leave it out of inserts |
+| `game_id` | uuid | Catalog id. Must be a uuid, not a slug |
+| `reminder_enabled` | boolean | Defaults to `true` |
+| `added_at` | timestamptz | Set by the server |
+
+`(user_id, game_id)` is the key, so a game can only be saved once per account. Deleting
+an account deletes its wishlist.
+
+### A `remoteWishlist.ts` to sit next to `remoteLibrary.ts`
+
+```ts
+const WISHLIST_COLUMNS = 'game_id, reminder_enabled, added_at';
+
+export async function fetchWishlistEntries() {
+  const { data, error } = await supabase
+    .from('wishlist_entries')
+    .select(WISHLIST_COLUMNS)
+    .order('added_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function insertWishlistEntry(gameId: string) {
+  const { data, error } = await supabase
+    .from('wishlist_entries')
+    .insert({ game_id: gameId })          // user_id is filled in server-side
+    .select(WISHLIST_COLUMNS)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function setWishlistReminder(gameId: string, enabled: boolean) {
+  const { error } = await supabase
+    .from('wishlist_entries')
+    .update({ reminder_enabled: enabled })
+    .eq('game_id', gameId);
+  if (error) throw error;
+}
+
+export async function deleteWishlistEntry(gameId: string) {
+  const { error } = await supabase.from('wishlist_entries').delete().eq('game_id', gameId);
+  if (error) throw error;
+}
+```
+
+RLS already scopes updates and deletes to the caller's own rows, so `.eq('game_id', …)`
+alone is safe. Adding `.eq('user_id', userId)` like `remoteLibrary.ts` does is harmless
+too.
+
+### What comes back
+
+Insert:
+
+```json
+{
+  "user_id": "ba900ed2-932f-4347-b543-b51de306d542",
+  "game_id": "6e42b13e-b183-4337-af6b-a033c01f84cf",
+  "reminder_enabled": true,
+  "added_at": "2026-09-11T21:27:34.814887+00:00"
+}
+```
+
+You can pull the release date in the same request by embedding the game:
+
+```ts
+supabase.from('wishlist_entries')
+  .select('game_id, reminder_enabled, added_at, games(title, release_date, cover_url)')
+```
+
+```json
+[
+  {
+    "game_id": "df5583ab-0832-463e-878a-8626b76e1d68",
+    "reminder_enabled": true,
+    "added_at": "2026-09-11T21:27:35.116349+00:00",
+    "games": {
+      "title": "Kirby Air Riders",
+      "cover_url": "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/coaauz.jpg",
+      "release_date": "2025-11-20"
+    }
+  }
+]
+```
+
+Errors, all real:
+
+| When | `code` | `message` |
+|---|---|---|
+| Saving a game twice | `23505` | duplicate key value violates unique constraint "wishlist_entries_pkey" |
+| `game_id` not in the catalog | `23503` | … violates foreign key constraint "wishlist_entries_game_id_fkey" |
+| `game_id` is a slug like `'elden-ring'` | `22P02` | invalid input syntax for type uuid: "elden-ring" |
+| Writing someone else's `user_id` | `42501` | new row violates row-level security policy for table "wishlist_entries" |
+
+Delete returns `204` with no body.
+
+### Four things to get right when you wire it
+
+1. **The two seed entries are slugs.** `DEFAULT_ENTRIES` holds `'kirby-air-riders'`
+   and `'hollow-knight-silksong'`, which the table rejects with `22P02`. Both games are
+   in the catalog, so if you want to keep them:
+
+   | Slug | Catalog id |
+   |---|---|
+   | `kirby-air-riders` | `df5583ab-0832-463e-878a-8626b76e1d68` |
+   | `hollow-knight-silksong` | `6e42b13e-b183-4337-af6b-a033c01f84cf` |
+
+   Dropping them like you did for the library seed is simpler, though. Both games came
+   out in 2025, so they'll never show a release reminder in a demo anyway. Pick
+   something with a future `releaseDate` for that.
+
+2. **Release reminders never arm for real games right now.** `syncReminder()` looks the
+   release date up with `findCatalogGame()`, which only knows the local demo catalog, so
+   for any uuid it finds nothing and quietly does nothing. Take the date from the backend
+   instead: the embedded `games.release_date` above, or the resolved `CatalogGame`'s
+   `releaseDate`. The check should be `releaseDate > today`. The backend sends a date
+   for every game that has one, past or future, so the field being present doesn't mean
+   the game is unreleased.
+
+3. **Don't render covers from the embed.** The embedded `games(...)` is the raw row: it
+   has `cover_url`, not `coverImageUrl`, and **no `abbreviation` or `colorKey`**. Those
+   two are computed in the edge functions, not stored. `GameCover.tsx` turns a missing
+   `colorKey` into slate grey without an error. Keep rendering through
+   `useResolvedGames` as you do now, and use the embed only for the reminder date.
+
+4. **Make it per-account, like the library.** Hydrate on sign-in, `reset()` on sign-out,
+   and stop persisting to AsyncStorage. `reminder_enabled` is stored on the server so a
+   reinstall or a second device knows which local reminders to schedule again. The
+   reminder itself is still your `expo-notifications` one.
+
+One product call that's yours: **adding a saved game to the library leaves it saved.**
+The backend allows both at once. If "Add to library" should also remove it from the
+wishlist, that's one extra `deleteWishlistEntry()` call in the app.
+
+---
+
+## 3. What your library sync just unlocked
+
+Until 10 Sep the app wrote nothing to `library_entries`, so the two features below
+returned empty for every real account. That's no longer true, and both are one screen
+away.
+
+### Roulette
+
+```
+GET /roulette?platform=167&hours=1.5&size=quick   ->  CatalogGame | null
+```
+
+- **`platform` is required.** It's the integer platform id from `CatalogGame.platforms[].id`
+  (PS5 is `167`, PC is `6`). If it's missing, you get a `400`.
+- **`hours`** is how long they have tonight. It changes the odds but never filters.
+  A 30-minute session against a backlog of 60-hour RPGs still returns something.
+  Defaults to 2.
+- **`size`** is optional: `quick`, `medium` or `epic`. Anything else is a `400`.
+- **`null` means one thing only: nothing in their backlog is on that platform.** It
+  never means "your filters excluded everything".
+- It picks from `backlog` and `playing` entries.
+- **Never cache it.** The same request returns a different game on purpose, since it's
+  a weighted random pick. Any response cache, React Query `staleTime`, or memoising on
+  the URL makes it look like the roulette is broken.
+
+### Popular with friends
+
+```
+GET /games/popular-with-friends?limit=20&offset=0   ->  (CatalogGame & { friendCount })[]
+```
+
+This ranks games by how many of the people you follow have them as `playing` or
+`beaten`. It counts only followees who have `profiles.share_activity` switched on. That
+defaults to `true`, **so the app needs a settings toggle**, or "opt-in" is only a word.
+It never says *which* friend has a game, only how many. That's deliberate: libraries
+stay private.
+
+---
+
+## 4. Friends feed and notifications: built, waiting on the app
+
+The Friends tab is still `FRIEND_POSTS` in `LibraryScreen.tsx`. The backend for all of
+it has existed since 9 Sep. Payloads are in the API reference; the short version:
+
+**First, write a `profiles` row on first sign-in.** Nothing in the app does this yet, and
+**without it the feed and the notification inbox both render empty**:
+
+| Field | Rule |
 |---|---|
-| `/roulette` — not deployed | **Live since 8 Sep.** Verified against a real backlog, 45 checks |
-| `/popular` — doesn't exist, faked with 15 hardcoded search queries | **`GET /games/popular` is live.** Real IGDB popularity, paginated |
-| `/share-resolve`, `/share-confirm` — not deployed | You were right. **Both live as of today** — see below |
-| Google/Apple sign-in | You were right. Still waiting on Josh |
-| Friends feed, notifications | You were right. No backend, and not in the spec |
+| `user_id` | the signed-in user's id |
+| `handle` | lowercase, `^[a-z0-9_]{3,20}$`, unique. Taken = `23505` |
+| `display_name` | 1–40 characters |
+| `avatar_color` | one of your ten `coverColors` keys. Defaults to `slate` |
+| `bio` | optional, up to 160 |
 
-**Delete `POPULAR_SEED_QUERIES` and the 15-call fan-out in `unifiedCatalog.ts`.** The
-comment above it — "There's no browse or trending endpoint — the catalog is search-only
-by design" — is no longer true. One call replaces it:
+**It's follow, not friendship.** A follows B needs nothing from B, which matches the
+follower/following counts your UI already shows.
 
-```
-GET /games/popular?limit=20&offset=0   ->  CatalogGame[]
-```
+- **Posts:** insert into `posts` with `author_id`, `body`, and optionally `link_url`,
+  `game_id` and `image_path`. Images go in the `post-images` storage bucket, and **the
+  path must start with the user's id** (`<user id>/whatever.jpg`), or the upload is
+  refused.
+- **Reading the feed:** `rpc('shelf_feed', { p_limit, p_before, p_before_id, p_handle })`.
+  Pagination uses a cursor: pass the last row's `created_at` and `id` for the next page.
+  Leave out `p_handle` for the feed, and pass one for a profile's posts.
+- **Profile header counts:** `rpc('shelf_profile_stats', { p_handle })`.
+- **Likes and comments:** `post_likes` and `post_comments`. Liking twice (or following
+  twice) is rejected with `23505`, never counted twice, so treat that code as "already
+  done".
+  A post's author can delete comments on their post.
+- **Blocks and reports:** `user_blocks` and `content_reports`. App Store review
+  (guideline 1.2) requires both before user-generated content ships, so they need a
+  place in the UI, even a small one.
+- **The inbox:** `rpc('shelf_notifications', { p_limit, p_before, p_before_id, p_unread_only })`,
+  `rpc('shelf_unread_notification_count')` for the badge, and
+  `rpc('shelf_mark_notifications_read', { p_ids })` (leave out `p_ids` to mark all
+  read). It covers follows, likes and comments. It's **in-app only, no push**. Push can
+  be added later without changing any of this.
 
-Same `CatalogGame` shape you already normalize. `limit` caps at 100, ties break by id
-so paging never repeats or drops a row. That also fixes the thing your own note
-worried about: it is real popularity, not fifteen titles someone typed out.
+Libraries and share history stay private to their owner. Nothing in the feed shows what
+someone has in their library.
 
-## The share flow, end to end
+---
 
-Two calls. Both `POST`, both need the user token, both `application/json`.
+## 5. Sharing a link, still to wire
+
+Two calls, both `POST`, both JSON, both need the user's token. The paths use a hyphen:
+`share-resolve`, not `share/resolve`.
 
 ```
 POST /share-resolve   { "url": "<whatever the share sheet gave you>" }
   -> { intakeId, provider, extractedText, confident, candidates[] }
 
 POST /share-confirm   { "intakeId": "<from above>", "gameId": "<the one they tapped>" }
-  -> LibraryEntry
+  -> the library_entries row, snake_case
 ```
 
-Note the paths are `share-resolve` and `share-confirm` with a hyphen. Not
-`/share/resolve` — some older comments in my repo said that and they were wrong.
+- **`/share-resolve` always returns 200 and never writes to the library.** `candidates: []`
+  means we couldn't tell, so show a search box. The link is saved either way.
+- **`confident: true` means show one big result. It never means skip the confirm step.**
+- **`extractedText`** is the caption or title we read. Showing it ("we read this from
+  your link") makes a wrong guess make sense.
+- **`/share-confirm` adds the game as `backlog` with the source link.** Re-confirming a
+  game they already have returns their existing row untouched, so a beaten game stays
+  beaten.
 
-**`/share-resolve` never writes to the library.** It saves the link and comes back
-with guesses. Things worth designing around:
+Measured on 21 real gaming TikTok links: 16 came back confident, and 14 of those
+were the right game. That's why the confirm step stays.
 
-- **It always returns 200, even when it has no idea.** `candidates: []` means
-  "unmatched" — show the search box. The link is saved either way; nothing a user
-  shares is ever dropped, so you can always offer "we could not read that one, search
-  for it instead" rather than an error state.
-- **`confident: true` means show one result large. It never means skip the confirm
-  step.** The confirm screen is the whole reason this can be trusted.
-- **`extractedText`** is the caption or title we read. Worth showing as "we read this
-  from your link" — it makes a wrong guess legible instead of baffling.
-- **`candidates` is at most 5, best first**, and each one is a full `CatalogGame`, so
-  it renders with the components you already have.
+**App-side setup, so it doesn't catch you out late:**
 
-**`/share-confirm` is the only thing in the entire system that writes
-`library_entries`.** It sets `status: 'backlog'` and stores `source_url` — the TikTok
-or YouTube link the game came from. That field is the differentiator: it is what makes
-a finish card say "found on TikTok in March, beaten in September".
-
-Re-confirming a game the user already has is safe. It returns the existing row
-untouched — if they had already beaten it, it stays beaten. It will not knock their
-progress back to backlog.
-
-The response is the `library_entries` row **as stored, in snake_case**
-(`game_id`, `source_url`, `added_at`), unlike `CatalogGame` which is camelCase. That
-is deliberate and documented, but it will bite if you assume otherwise.
-
-## The app-side gap, which is bigger than the share screens
-
-**Your library is entirely local.** `useLibraryStore` is zustand + AsyncStorage with
-seven hardcoded demo entries, and nothing in the app reads or writes
-`library_entries` on the server. That has three consequences worth knowing before you
-build the share UI:
-
-1. **`/roulette` will keep returning `null`** for every real account no matter what we
-   do on my side. It rolls the server's `library_entries`, which only
-   `/share-confirm` fills. A share that lands in local state only is invisible to it.
-2. **The library does not survive a reinstall or a second device**, which for a
-   backlog tracker is the feature.
-3. **`catalogId` currently mixes two kinds of id.** The seeded demo entries use slugs
-   (`'elden-ring'`, `'hades-2'`) and anything from search uses backend uuids.
-   `library_entries.game_id` is a uuid foreign key into the catalog, so the slug rows
-   can never sync — they have no server-side game to point at. Worth deciding what
-   happens to them before you write the sync, rather than after.
-
-I am not asking you to rewrite the library this week. But the share flow only shows up
-in the app if the library reads from the server, so the two are one job, not two.
-
-## What I need from you
-
-**About 20 real gaming TikTok share links.** This is the one thing I cannot do from a
-laptop, and it is the last unmeasured part of the feature.
-
-Everything above is verified against one real gaming YouTube link and one real TikTok
-link, which proves the machinery works and that a video with no game in it correctly
-comes back unmatched. What it does not tell me is the hit rate on captions people
-actually write. Caption extraction is guesswork until that is measured.
-
-Just share 20 gaming TikToks to yourself and paste the URLs. No captions needed — I
-pull those.
-
-## Two smaller things I noticed
-
-- **`app.json` still has `com.nathanakin.revenuecatgame`** as both the iOS bundle
-  identifier and the Android package. That has to change before the first Play upload,
-  because the package name is permanent once uploaded.
-- **The app now calls itself Prysm**; the backend, the spec and every doc say Shelf.
-  Not a problem, but let us pick one before store listings — and tell me, because I
-  will rename my side to match.
+- It needs `expo-share-intent`, which means a dev build (`expo prebuild`, then
+  `expo run:ios` / `run:android`). Expo Go can't receive shares.
+- On SDK 57, `expo prebuild` **wipes and regenerates** `ios/` and `android/` by default.
+  Use `--no-clean` if you have native changes in there.
+- On iOS the share extension hands the URL to the app through an App Group. If the
+  App Group isn't configured for both targets, shares fail **silently**: the sheet
+  shows the app, you tap it, and nothing arrives. Check this first if iOS shares seem
+  to do nothing.
 
 ---
 
-# Update, 7 September: it is live
+## 6. Contract details that still hold
 
-The backend is deployed and working against real data. Everything below this line was
-written on 4 September as a heads up; this part is the actual handoff. Where the two
-disagree, this part wins.
+- **Search got better on 12 Sep and the contract did not change.** Two kinds of query
+  that used to return the wrong game now work: the name with the spaces taken out
+  (`awayout`, `battlefield6`, `dragonsdogma2` — all now first, none was even in the top
+  5 before), and a query whose every word is accounted for by one game (`zelda botw`
+  now returns Breath of the Wild). Same response shape, same `score` thresholds, and 21
+  queries were captured before and after so the ones that already worked still do.
+  Nothing on your side needs touching — your search screen just gets fewer wrong
+  answers.
+- **`colorKey`** is always one of your ten `theme.ts` keys (`teal, orange, purple, pink,
+  gold, navy, red, green, blue, slate`). If you rename or drop one, tell me, because my
+  checks can't see your theme file.
+- **Fields that can be missing:** `releaseDate`, `coverImageUrl`, `timeToBeatHours`
+  (only ~5% of games have it), `sessionFit`, `criticScore`, `slug`. `pcRequirements`
+  is always missing for real games, because IGDB has no such data.
+- **Cover art is 3:4, 528 × 704.** This corrects my 4 Sep note, which said 528 × 748
+  from IGDB's docs. I measured the actual files this week and 98.4% of covers are 3:4.
+  **No source we have serves square art**, IGDB or Steam — the only near-miss was
+  Steam's transparent wordmark, which reaches ~46% of rated games and misses every
+  Nintendo and PlayStation exclusive, so it was not shippable. **Closed 12 Sep:** Paul
+  dropped the two-ratio ask and settled on one, and it's yours app-side now. **One
+  thing to nail down before you build to it** — his ratio came to me relayed as
+  "4:3", which is *landscape*. What IGDB actually serves is **3:4 portrait**. Those
+  are different shapes; please confirm which he means.
+- **`criticScore` is IGDB's critic aggregate, not Metacritic.** Don't label it that.
+- **IGDB attribution is required** by their terms: visible, in a fixed place, can be
+  small.
+- **Search for vague descriptions** ("feudal Japan, guy with a metal arm, really hard")
+  isn't built yet and is waiting on API keys. When it lands it won't change the
+  `/search` contract.
 
-The catalog holds **89,117 games**, with alternative titles so `botw`, `gta v` and
-`bg3` resolve. Two endpoints are live and verified end to end against a real signed
-token.
+---
 
-**Base URL:** `https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1`
+## 7. The finish card — the backend owes nothing, you need three columns
 
-- `GET /search?q=elden ring` → `CatalogGame[]`, at most 10
-- `GET /games/<uuid>` → `CatalogGame`
+The design landed on **the app rendering and capturing the card itself**, with a plain
+Shelf link riding along in the share text. So there is **no endpoint, no migration and
+no image renderer coming** — please don't wait on me for any of it. (The alternative
+was a public URL that unfurls in a paste, which is the better growth loop but needs a
+capability token, a Deno renderer, cover-art caching and a decision from Josh about
+publishing a private row. Against the 30 Sep deadline it wasn't worth it. If it ever
+comes back, that's the shape.)
 
-Both require a logged-in user. Without a token they return 401, so the URL on its own
-will not get you anything — the session has to come first. That is the main piece of
-work on your side and I go through it below.
-
-## 1. What the app needs before it can call anything
-
-There is no Supabase wiring in the app repo at all right now — no `@supabase/supabase-js`
-in `package.json`, no reference to it in `src/`, and `src/config/env.ts` only carries the
-RevenueCat keys. So:
-
-```sh
-npx expo install @supabase/supabase-js @react-native-async-storage/async-storage
-```
-
-AsyncStorage you already have. The client wants it for session persistence:
-
-```ts
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    storage: AsyncStorage,
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,   // required on React Native
-  },
-});
-```
-
-Then `searchCatalog` becomes:
-
-```ts
-export async function searchCatalog(query: string): Promise<CatalogGame[]> {
-  const { data, error } = await supabase.functions.invoke(`search?q=${encodeURIComponent(query)}`, {
-    method: 'GET',
-  });
-  if (error) throw error;
-  return data;
-}
-```
-
-`functions.invoke` attaches the current session's token for you. If you'd rather use
-`fetch` directly, you need both an `apikey` header and `Authorization: Bearer <token>`.
-
-I will send you the URL and the anon key separately rather than put the key in a doc
-that gets forwarded. The anon key is safe to ship in the bundle — it is meant to be
-public and RLS is what actually protects the data — but I would still rather hand it
-over directly.
-
-## 2. You are not blocked on Josh for this
-
-Google and Apple sign-in need accounts that are Josh's, and that is still outstanding.
-But **email and password sign-in is enabled on the project today**, so you can build
-and test the whole session flow now:
+**What blocks it is three lines in your repo.** `src/services/library/remoteLibrary.ts:19`:
 
 ```ts
-await supabase.auth.signInWithPassword({ email, password });
+const LIBRARY_COLUMNS = 'game_id, status, rating, notes, hours_played, added_at';
 ```
 
-Switching to Google or Apple later changes who mints the identity. It does not change
-the shape of the token, how the endpoints read it, or any of the code above. So the
-plumbing you write against email/password is the plumbing that ships. Please do not
-wait on the providers to start this.
+`source_url`, `source_kind` and `finished_at` are not in there, `LibraryRow` has no
+fields for them, `rowToEntry()` doesn't map them, and `LibraryEntry`
+(`src/features/library/types/index.ts`) has no fields for them either. The odd part is
+that `LibraryPatch` in the same file **already writes `finished_at`** — `useLibraryStore.ts:107`
+sets it the moment a game goes `beaten`. So the app writes that timestamp and can never
+read it back, and the link the share flow worked hard to capture never comes home.
 
-## 3. What actually comes back
+All three columns have been on the table since the first migration and RLS is
+row-level, so **they are already readable by you — nothing server-side has to change.**
+Add them to the select, the row type and the entry type and the card has its data.
 
-This is a real response from the deployed endpoint, not a sketch:
+**The gotcha worth knowing before you design the card.** `source_url` is only ever
+written by `/share-confirm`. Your own `insertLibraryEntry` hardcodes
+`source_kind: 'search'` and no URL (`remoteLibrary.ts:44`), so **a game the user found
+by searching has no "found on" line at all.** The card's best headline — "found on
+TikTok in March, beaten in September" — only fires for shared games. Worth designing
+the no-source variant deliberately rather than discovering it on a real account.
+
+**Nothing can be demoed yet, and that's not a bug.** On 12 Sep `library_entries` held
+exactly **one row in the whole database** — my own verification row — and `beaten` was
+zero. Nobody has finished a game yet. Seed yourself a couple of `beaten` rows with a
+rating and a `finished_at` to build against.
+
+---
+
+## 8. What I still need from you
+
+1. **The package name and bundle ID.** `app.json` still says
+   `com.nathanakin.revenuecatgame` for both, which is the scaffold's. It's one line
+   today, but **it becomes permanent at the first Play Store upload**: Google treats a
+   changed id as a new app. Please use the same namespace for iOS so Josh registers the
+   Apple App ID once.
+2. ~~**The app's name.**~~ **SETTLED 14 Sep — it is Prysm.** The store listings, the
+   `prysm://` scheme and the bundle id all key off this. The backend repo and these
+   docs still say "Shelf" throughout; that is an internal name for the service and is
+   not worth a rename mid-build, but nothing user-facing should carry it.
+3. ~~**Confirm the deep link scheme.**~~ **CONFIRMED 14 Sep — `prysm://` is final**,
+   now that the name is. It is already set as the Steam callback's return URL. The
+   redirect allow-list on the auth project is **still empty**, so Google and Apple
+   sign-in cannot return to the app — that is now the only thing left here, and it is
+   mine to do once you confirm the exact redirect paths the app registers.
+4. **Sign-in providers.** Email/password is on, and it's what you're using. Google and
+   Apple are still off, waiting on Josh's accounts. One decision for the sign-in screen:
+   **use one provider per platform, Apple on iOS and Google on Android.** Apple's Hide My
+   Email gives a relay address that never matches someone's Google email, so a person
+   who uses both gets two separate accounts. Their library looks like it vanished, and
+   there's no error to debug.
+
+---
+
+## 9. New today: Steam import, and the four things it needs from the app
+
+Connecting a Steam account and pulling the user's library is built and deployed.
+It is the single best onboarding moment we have — a typical account goes from an
+empty shelf to several hundred games in about two seconds — so it is worth wiring
+carefully.
+
+### The flow is three calls plus a browser trip
+
+```
+  app                     backend                        Steam
+   |  POST /steam-link-start  ->|
+   |<- { redirectUrl, nonce }   |
+   |-- open redirectUrl in a browser ------------------->|  user signs in
+   |                            |<- GET /steam-link-callback?nonce&openid.*
+   |<- 302 <scheme>://link/steam?status=ok&nonce=...     |
+   |  POST /steam-link-finish { nonce } ->|
+   |<- PlatformAccount          |
+   |  POST /steam-import ->|
+   |<- { total, matched, inserted, updated, unmatched }  |
+```
+
+`status` on the redirect is `ok`, `failed` or `expired`. Only on `ok` should the app
+call `/steam-link-finish`. The nonce is single-use and dies after ten minutes.
+
+**This is a connection, never a sign-in.** Do not put "Sign in with Steam" on the
+auth screen. The moment Steam becomes a way to *create* an account, App Store
+guideline 4.8 pulls Sign in with Apple into scope for the whole app. As a connection
+inside an already-signed-in session it costs us nothing. Valve also requires one of
+their supplied "Sign in through Steam" button images on the button itself — grab it
+from `partner.steamgames.com`, don't draw your own.
+
+### 1. The deep link scheme — settled, and already wired
+
+**The app is called Prysm.** Settled 14 Sep, so `prysm://` is final rather than
+provisional, and `APP_LINK_RETURN_URL` is set to **`prysm://link/steam`** in Supabase
+secrets. The callback 302s to:
+
+```
+prysm://link/steam?status=ok|failed|expired&nonce=<the nonce>
+```
+
+The app needs to handle that route. If you would rather have an `https://` universal
+link, say so and it is a one-command change — but the scheme works and nothing is
+blocked on it now.
+
+Two consequences worth acting on, since the name is no longer in flux: the auth
+redirect allow-list can finally be populated (section 8 item 3's other caller —
+Google and Apple sign-in still cannot return to the app without it), and the package
+name / bundle ID in section 8 item 1 can be settled in the same pass. That one goes
+permanent at the first Play Store upload.
+
+### 2. `source_kind` has three new values
+
+`library_entries.source_kind` was `'tiktok' | 'youtube' | 'search' | 'manual'`. It is
+now also `'steam' | 'xbox' | 'psn'`. If the app types that as a closed union or
+switches on it to pick an icon, **imported rows will fall through** — the same shape
+of problem as `colorKey`, where neither side reported the mismatch. `'psn'` is in the
+constraint even though PlayStation is not built, so tolerate it now and never think
+about it again.
+
+There is also a new nullable `imported_uid` column. Ignore it; it exists so a
+disconnect knows what it created.
+
+### 3. Show both numbers, and the paywall goes AFTER them
+
+`/steam-import` returns `total` and `matched`, and they always differ. **How much
+they differ depends entirely on what kind of Steam user it is, and you should design
+for the bad case.**
+
+Measured 14 Sep against a real 4,652-game account:
+
+| | resolved |
+|---|---|
+| everything they own | **38.6%** |
+| everything they have ever played | **83.1%** |
+| their top 20 by playtime | **85.0%** |
+
+**Owned and played are different sets, and the miss is concentrated entirely in the
+never-opened part.** That account has played 148 of 4,652 games; the rest is bundle
+and giveaway shovelware (`Iggle Pop! Deluxe`, `Typer Shark! Deluxe`), which our
+catalog deliberately does not carry. Blender, Wallpaper Engine and Source Filmmaker
+are in there too, and dropping those is correct — they are not games.
+
+So *"Added 412 of your 468 Steam games"* is right for a normal account, but a
+collector will see *"Added 1,797 of your 4,652"* and think we are broken. Two things
+help:
+
+- **Lead with what they play.** If you sort or headline by `hours_played`, the top
+  of the list is ~85% complete regardless of library size, and it is the part they
+  recognise.
+- **Say why, in one line.** "The rest are mostly bundle extras and non-game apps we
+  don't track" turns a number that looks like failure into one that looks like a
+  filter. Don't just say *"Done"* — that invites them to go hunting.
+
+**And the paywall lands after this screen, never before it** — Josh's call on 14 Sep,
+with the conversion evidence in `docs/research/pricing.md` §4. Imported rows *do*
+count against `FREE_TIER_GAME_LIMIT` (50), and the backend deliberately does not
+enforce that on the import path. Run the import, show them all 412 games we found,
+*then* ask. Being asked to pay for a number you cannot see yet is a much worse
+moment.
+
+### 4. The private-profile error is the one you must design for
+
+This will be our top support complaint, and Steam makes it silent: if the user's
+**Game details** privacy is not Public, Steam returns HTTP 200 with an empty body and
+no error at all. `/steam-import` detects it and answers `409` with:
 
 ```json
 {
-  "id": "fc9cd9c2-aa68-42c0-9226-33cf6c4bcdef",
-  "title": "Elden Ring",
-  "slug": "elden-ring",
-  "platforms": [
-    { "id": 508, "name": "Nintendo Switch 2",      "slug": "switch-2"   },
-    { "id": 6,   "name": "PC (Microsoft Windows)", "slug": "win"        },
-    { "id": 48,  "name": "PlayStation 4",          "slug": "ps4--1"     },
-    { "id": 167, "name": "PlayStation 5",          "slug": "ps5"        },
-    { "id": 49,  "name": "Xbox One",               "slug": "xboxone"    },
-    { "id": 169, "name": "Xbox Series X|S",        "slug": "series-x-s" }
-  ],
-  "releaseDate": "2022-02-25",
-  "genres": ["Role-playing (RPG)", "Adventure"],
-  "coverImageUrl": "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co4jni.jpg",
-  "timeToBeatHours": 119.4,
-  "sessionFit": "low",
-  "criticScore": 97,
-  "abbreviation": "ER",
-  "colorKey": "red"
+  "error": "steam_profile_private",
+  "message": "Your Steam game details are private, so Steam returns an empty library. Set Game details to Public and try again.",
+  "fixUrl": "https://steamcommunity.com/my/edit/settings"
 }
 ```
 
-Six platforms, which is the thing `platform: string` could never hold.
+Render `fixUrl` as a button, not as text. A generic "import failed" here sends the
+user looking for a bug on our side.
 
-`slug` is new since the 4 September draft — stable and readable, so share links can use
-it instead of the uuid. `id` is still the thing to key on.
+### Disconnecting
 
-Fields that can be absent: `releaseDate`, `coverImageUrl`, `timeToBeatHours`,
-`sessionFit`, `criticScore`, `slug`. Only about 5% of games have a time to beat, so
-treat that as usually missing rather than usually present.
+`rpc('shelf_disconnect_platform', { p_platform: 'steam' })`. It deletes the
+connection and every imported row the user never touched, and returns how many it
+removed. **Games they made their own are kept** — anything they re-statused, rated or
+annotated stays in the library and just stops claiming to come from Steam. Apple
+5.1.1 already requires in-app account deletion; this is the same idea one level down,
+and it is two hours of UI that keeps us clean with both store reviews.
 
-## 3b. The popular endpoint you asked for — live now
+### What is not coming
 
-`GET /games/popular` is deployed and returns the same `CatalogGame[]` as everything
-else, so it needs no new type on your side:
+**Last-played dates and per-device playtime do not exist.** The research doc claimed
+Steam returns them; it does not, for a third-party key reading someone else's
+profile — measured across a real 4,652-game library on 14 Sep, zero rows carried any
+of them. Total hours per game is all we get. If a screen was designed around "last
+played on Deck", it needs redesigning.
+
+**Xbox is import-only** and PlayStation is not built. Neither is in this release.
+
+## 10. New today: the search screen's filter header
+
+Paul's search doc (pages 3–5) puts three controls above the results: the **Release
+Date** pill, the **Categories** pill (genre + device type) and the **Sort By**
+portal. All three are now `/search` query parameters. Full reference is in
+`openapi.yaml`; this is what you need to know to wire it.
+
+**Everything is applied in the query, before the 10-row limit.** Do not filter the
+response — `/search` returns 10 rows, so filtering those in the app gives a
+near-empty list on a screen that looks like it should be full.
+
+```
+GET /search?q=eden
+  &releaseFrom=2020-01-01&releaseTo=2029-12-31   // the pill
+  &genre=rpg&genre=puzzle                        // OR'd; comma form also works
+  &device=xbox&device=pc                         // OR'd
+  &sort=recent&sortDir=desc
+```
+
+**The app owns the Release Date bucket labels and their boundaries.** The backend
+takes two ISO dates and nothing else. Paul's "2020s / 2020-2026" label is already
+dated and he will move it again; if the eras lived in the API, every move would be
+a migration. "Upcoming" is `releaseFrom` = tomorrow, `releaseTo` omitted.
+
+**"Upcoming" means dated future releases only — settled 14 Sep.** 3,668 games
+carry a future date and those are what you get. A game announced with no date at
+all is not in the catalog (2 such rows in 89,123, and IGDB's undated games are
+excluded from both seed passes on purpose), so the pill cannot mean
+"announced, whenever". Paul owns rewording the label if "sometime in future"
+oversells it; nothing changes on this side.
+
+**The backend owns the genre vocabulary**, which is the opposite call and
+deliberate: the rollups are facts about IGDB's data, not UI choices. You send pill
+slugs. `strategy` quietly covers `Turn-based strategy (TBS)`, `Real Time Strategy
+(RTS)`, `Tactical` and `MOBA` — there is no way you could know that from the app.
+
+**Four of Paul's 14 genre pills have no IGDB data and are not going to get any** —
+`action`, `souls`, `open-world` and `survival` return `200 []`. IGDB has no
+"Action" genre at all (it files those under Shooter, Fighting, Hack and slash and
+Arcade), and the other three are themes/keywords — columns that exist but are
+empty for all 89,123 rows. Decided 14 Sep not to re-seed for them: a pill the
+provider has no data for doesn't get invented in the backend, so this is yours to
+reconcile in the app.
+
+**Read the vocabulary, don't hardcode it.** `genre_pills` is a real table and you
+can select from it with a normal authenticated session:
 
 ```ts
-export async function popularGames(limit = 20, offset = 0): Promise<CatalogGame[]> {
-  const { data, error } = await supabase.functions.invoke(
-    `games/popular?limit=${limit}&offset=${offset}`, { method: 'GET' },
-  );
-  if (error) throw error;
-  return data;
-}
+const { data } = await supabase.from("genre_pills").select("pill, genre");
+// distinct `pill` = every slug that actually filters something
 ```
 
-`limit` defaults to 20 and is capped at 100; `offset` pages. Paging past the end
-gives `[]`, not an error, and paging is stable — a row cannot be dropped or repeated
-between pages.
-
-**What "popular" means here.** It is ordered by IGDB's count of *user ratings*, so it
-is a measure of how widely played something is, not how good it is. That is a
-different number from `criticScore` — a game can be widely played and mediocre, or
-acclaimed and obscure. The count itself is **not** in the response: the ordering is
-the contract, so I can re-tune it without breaking your screens.
-
-**The list is finite: 15,948 games**, out of 89,117 in the catalog. The other 73,169
-have no ratings at all and are excluded deliberately — they are not "less popular
-games", they are rows with no signal, and including them would put something random
-on page 4. So do not build a UI that assumes infinite scroll; it ends.
-
-The top of the list, for what to expect: Grand Theft Auto V, The Witcher 3, Portal 2,
-Skyrim, GTA: San Andreas, Portal, Red Dead Redemption 2, God of War.
-
-**Search ranking improved at the same time**, off the same data — you do not have to
-do anything, results just get better. Searching `cyberpunk` used to return *Cyberpunk
-SFX* and *Cyberpunk Sex* above *Cyberpunk 2077*, because the old ranking favoured
-short titles. It now returns Cyberpunk 2077 first. Two known cases are still not
-right — `zelda botw` and `dragonsdogma2` return a near-miss first — but both are in
-the top 5, and both are a different bug that I will fix separately.
-
-## 4. Where your type and mine differ, and who wins
-
-I went through the app repo properly this time rather than guessing. The rule I used:
-**I own anything derived from IGDB data, you own anything that is a design decision.**
-
-| Field | Winner | Note |
-| --- | --- | --- |
-| `platforms[]` vs `platform` | mine | Six platforms on Elden Ring. Pick one for the row subtitle, or let people choose which they own. |
-| `genres[]` vs `genre` | mine | `genres[0]` if you just need one. |
-| `releaseDate` vs `year` | mine | `year` is required in your type but plenty of games have no date at all. Derive it: `new Date(releaseDate).getFullYear()`. |
-| `id` uuid vs `'elden-ring'` | mine | Has to match the database key, see below. |
-| `abbreviation` | mine | Can't hand-type 89,117 of them. |
-| **`colorKey`** | **yours** | Mine was a placeholder I invented. Yours are real design values, so I took yours. |
-| `pcRequirements` | neither | Still does not exist in IGDB. |
-
-**On `colorKey`, I owe you a heads up.** I was emitting `amber, rose, violet, indigo,
-teal, emerald, slate`. Your `coverColors` in `theme.ts` knows `teal, orange, purple,
-pink, gold, navy, red, green, blue, slate`. Only two of them overlapped. `GameCover.tsx`
-resolves an unknown key as `coverColors[colorKey] ?? coverColors.slate`, so five of my
-seven keys would have come through as the same grey, with no error anywhere to tell
-either of us. Fixed — I emit your ten now, and my verification pins every emitted key to
-that declared list, so it cannot drift silently on my side. It cannot see your
-`theme.ts`, though, so if you rename or drop a colour there, tell me and I will change
-mine to match. Worth knowing because it is exactly the kind of bug that survives to
-demo day.
-
-**Answering my own open question 1 from 4 September:** I checked, and yes,
-`pcRequirements` is being used — `GameDetailScreen.tsx` renders a minimum/recommended
-block from it. IGDB has no such data, so that section needs to come out or find another
-source. Sorry, that one is on me for putting it in the mock shape originally.
-
-## 5. Three things that are your call
-
-**`id` changes from slug to uuid, and that touches stored data.** Your library and
-wishlist stores persist `catalogId` into AsyncStorage, and those are currently strings
-like `'elden-ring'`. They have to become uuids, because `library_entries.game_id` points
-at the real games table. Simplest is to clear local state once during the switch, since
-this is all dev data. If you would rather migrate it, I can give you a slug → uuid
-lookup. Your mock ids look like IGDB slugs and many will match outright, but not all —
-IGDB has `hades-ii` where yours says `hades-2` — so that migration would need a
-by-hand pass over the stragglers. Clearing local state is genuinely the cheaper option.
-
-**`releaseDate` means something different now.** In your catalog its presence means "not
-out yet", and `useWishlistStore` uses it to decide whether to schedule a reminder. I send
-it for every game that has a date, past or future. Nothing breaks today —
-`scheduleReleaseReminder` already no-ops on a past date, which is good defensive code —
-but I would swap the flag for `releaseDate > today` so it says what it means.
-
-**The abbreviations get longer.** Mine takes up to three initials, so *Return of the Obra
-Dinn* is `ROD` where yours was `RO`, and *Hollow Knight: Silksong* is `HKS`. In a 48px
-swatch three characters may be tight. Say the word and I will cap it at two.
-
-## 6. What I still need from you
-
-For the Google and Apple sign-in setup, none of which is written down anywhere:
-
-- ~~Android package name~~ — got it, 8 Sep: `com.nathanakin.revenuecatgame`
-- ~~Android signing SHA-1 fingerprint~~ — got it, 8 Sep, from `android/app/debug.keystore`
-- iOS bundle identifier — Josh says use a placeholder, which is fine for now
-- the deep link scheme you want
-
-**Two things about what you sent, both worth acting on before 30 Sep.** Details in
-`docs/auth-setup.md`; the short version:
-
-**The package name is still the scaffold's.** `com.nathanakin.revenuecatgame` is
-someone else's namespace naming a different app — it came in with whatever RevenueCat
-sample the project started from. It cannot be changed after the first Play Store
-upload; Google treats a changed application ID as a brand new app, so you lose the
-listing, installs and reviews. Right now it is one line in `app.json`. Could you pick
-a real one — `com.shelfapp.shelf`, or the reverse of whatever domain Josh registers —
-and use the **same namespace for the iOS bundle ID**? That way Josh registers the
-Apple App ID once instead of twice, and the Google OAuth clients get created once.
-This is the reason it is worth doing this week rather than at the end.
-
-**That SHA-1 is the debug one, and it is a shared public value.** It is the
-checked-in React Native template `debug.keystore` (`CN=Android Debug`, serial
-`232eae62`) — identical in every project built from that template, not unique to you.
-Perfectly fine for the dev OAuth client, and it unblocks you today. But the release
-build has a *different* fingerprint, and if the Play listing uses Play App Signing
-(the default), the one Google has to trust is the app signing certificate that only
-appears in Play Console after the first upload. Both go on the same Android OAuth
-client. Worth knowing now so that "Google sign-in works on my machine but not in the
-release build" isn't a surprise during review week.
-
-**And one product decision, worth settling before you build the sign-in screen.**
-Supabase only links a second sign-in method to an existing account when the email
-matches. Apple's Hide My Email hands out a `@privaterelay.appleid.com` address, which
-will never match someone's Google address. So one person signing in with Google on
-Android and Apple on iOS gets two separate accounts, and their whole library looks like
-it vanished — no error, nothing to debug from the app side. App Store guideline 4.8
-requires us to offer the email-privacy option, so this is the path Apple actively pushes
-people down. Cheapest fix is one provider per platform: Apple on iOS, Google on Android.
-That is a UI decision more than a backend one, which is why it is yours.
-
-## 7. If you want to see it working
-
-Everything above is verified — `npm run verify:functions` on my side runs 29 checks
-against the deployed URLs, including auth rejection, response shape and a real search.
-`elden ring` comes back first. Search ranking is not perfect yet on shorter queries
-(`cyberpunk` currently puts some shovelware above Cyberpunk 2077) and I have a fix
-planned; it does not change the contract, so it should not hold you up.
-
----
-
-## What is changing under you
-
-### 1. Game data comes from a server we own, not from the app
-
-We cannot put API credentials in the bundle, and IGDB does not permit the app to call them directly anyway, so search goes through a small backend of ours. Supabase.
-
-For your side this mostly means `searchCatalog` becomes async and can fail. Loading and error states on Add Game, which do not exist yet.
-
-### 2. `CatalogGame` is changing shape
-
-Three problems with the current type:
-
-**`platform: string` holds one value.** Elden Ring is stored as `'PS5'`. It is on six platforms. Once the roulette can filter by "PS5", we need real platform availability, so this becomes a list.
-
-**`id: 'elden-ring'` is a hand written slug.** It becomes a generated ID, with the IGDB ID kept in a separate field the app never reads. This already earned its keep: I switched provider from RAWG to IGDB mid research and nothing outside the sync layer had to change.
-
-**No time to beat.** "I have 1 hour" has nothing to filter on. IGDB gives three estimates (rushed, normal, completionist) plus a confidence count, so this becomes several new fields.
-
-Rough shape of where it is going:
-
-```ts
-export type CatalogGame = {
-  id: string;                    // ours, not the provider's
-  title: string;
-  platforms: Platform[];         // was: platform: string
-  releaseDate?: string;
-  genres: string[];              // was: genre: string
-  coverImageUrl?: string;
-  timeToBeatHours?: number;      // new
-  sessionFit?: 'high'|'medium'|'low'; // new, drives the roulette
-  criticScore?: number;          // new, 0 to 100
-  abbreviation: string;          // keeping, good fallback
-  colorKey: CoverColorKey;       // keeping
-};
-```
-
-**Changed 4 September: `pcRequirements` is gone.** I had it in the earlier draft because RAWG has it. IGDB does not publish system requirements at all, so that field could only ever be undefined. Better to drop it than hand you a contract that lies. If we ever need it we would have to get it somewhere else entirely.
-
-On `criticScore`: it is IGDB's aggregate of external critic scores. It is **not** Metacritic, so please do not label it that anywhere in the UI.
-
-I want to keep `abbreviation` and `colorKey`. The coloured swatch fallback is genuinely good and real cover art fails to load more often than you would expect.
-
-### 3. `LibraryEntry` needs to remember where the game came from
-
-The share feature is the whole pitch, and right now there is nowhere to store the link someone shared. Adding roughly:
-
-```ts
-sourceUrl?: string;            // the TikTok or YouTube link
-sourceKind?: 'tiktok' | 'youtube' | 'search' | 'manual';
-```
-
-This is also what makes the finish card interesting later. "Found on TikTok in March, beaten in September" is a better card than a rating on its own.
-
-`hoursPlayed`, `notes`, `rating` and `status` all stay as you have them.
-
----
-
-## Two things that affect your screens directly
-
-### IGDB attribution is required
-
-We are going with IGDB (I first recommended RAWG and was wrong about their commercial terms, Josh has the correction). IGDB's commercial partnership requires user facing attribution to IGDB.com, visible and in a static place rather than buried in a changelog.
-
-It does not need to be loud. A small line at the bottom of the relevant screens is normal. But it is a requirement rather than a nicety, so worth designing in properly instead of bolting on at the end.
-
-Good news on covers: IGDB serves real box art, close to the Wikipedia art in your mock catalog. RAWG would have given us screenshots instead, so the look you designed for survives.
-
-Size note: IGDB's `t_cover_big` is only 264 x 374, which is soft on a phone. I will serve the `_2x` variant at 528 x 748, so expect roughly that aspect and resolution when you lay out cards.
-
-### We lose Expo Go
-
-Receiving shares from other apps needs `expo-share-intent`, which needs `expo prebuild` and a dev client. Version 8.0 supports Expo SDK 57, which is what we are on, so no version problems. I confirmed this against their compatibility table.
-
-Practically: `expo prebuild` then `expo run:ios` or `expo run:android` instead of Expo Go. Slower first build, then normal.
-
-**One trap worth knowing before you run it.** On SDK 57, `expo prebuild` now clears and regenerates the native `android` and `ios` directories by default. Pass `--no-clean` if you want it to apply changes to the existing folders instead. If you have local native changes in there, they will vanish otherwise.
-
-**A second one, from a cross-check I had run on the plan.** On iOS the share extension and the app are separate processes, and they hand the shared URL over through an App Group. If the App Group identifier is not set up in `app.json` for both, shares fail *silently*: the share sheet shows Shelf, you tap it, and nothing arrives. There is no error to read. I have not hit this myself, so treat it as a thing to check first if iOS shares look like they do nothing, rather than as a confirmed step.
-
-I would rather we all take this hit in week one than discover it on 25 September.
-
----
-
-## How the share flow actually works
-
-I tested this instead of assuming.
-
-Both TikTok and YouTube give us basic info about a shared link without any authentication. Quality varies a lot.
-
-YouTube returns a clean title:
-
-```
-"ELDEN RING - Official Gameplay Reveal"
-```
-
-TikTok returns the entire caption:
-
-```
-"Scramble up ur name & I'll try to guess it😍❤️ #foryoupage #petsoftiktok #aesthetic"
-```
-
-Real gaming captions look like the second one. Something like "this boss took me 3 hours 💀 #eldenring #soulslike".
-
-So the pipeline is: share arrives, we clean up the text, we search the catalog, and then **the user confirms**. I do not think we can auto add silently. Putting the wrong game in someone's backlog kills trust in the one feature that makes this app different.
-
-One thing I fixed on my side that affects what you see: I am filtering out DLC, expansions, bundles and special editions at ingest. Without that, searching "Elden Ring" returns the base game, Shadow of the Erdtree, the Deluxe bundle and several packs as separate entries, and they would all pile onto your confirm screen. The alternatives list should be genuinely different games, not five versions of one.
-
-What that means for you: a small confirm screen after a share. Best guess shown large, two or three alternatives underneath, and a search box if we got it completely wrong.
-
-There is also an unresolved state. If we cannot work out the game, we keep the link and let the user sort it out later, rather than dropping what they shared.
-
----
-
-## What is not changing
-
-- Your feature folder structure. It is working and I am matching it.
-- Zustand stores stay. Sync gets layered on rather than replacing them.
-- `GameStatus` and the shared components stay as they are.
-- The RevenueCat service wrapper is untouched by any of this.
-
----
-
-## Open questions for you
-
-1. Is anything already being built against `CatalogGame`'s current shape that I would break? I would rather change it once, this week, than in three weeks. In particular, is `pcRequirements` used anywhere yet?
-2. Do you want to own the confirm screen UI, or should I spec it and hand it over?
-3. Are you happy with Supabase, assuming Josh approves it?
-4. Your `colorKey` and `abbreviation` fallback is staying. I will derive both server side so it keeps working when cover art fails.
-
-The scaffolding gave me a clear picture in about twenty minutes. Thanks for the README, the "swapping in IGDB or RAWG later" note saved me guessing at the intent.
+Build the pill row from that and an unservable pill can never ship again — when
+the mapping changes, the app follows without a release. The ten that work today:
+`adventure`, `rpg`, `fps`, `strategy`, `simulation`, `sports`, `racing`,
+`fighting`, `platformer`, `puzzle`.
+
+**If you and Paul want to re-cut the pills against what IGDB actually has**, this
+is the whole vocabulary — all 23 genre names in the catalog, with the number of
+games carrying each:
+
+| genre | games | | genre | games |
+|---|---|---|---|---|
+| Indie | 50,948 | | Point-and-click | 2,427 |
+| Adventure | 34,288 | | Card & Board Game | 2,032 |
+| Simulator | 19,208 | | Fighting | 1,771 |
+| Strategy | 16,416 | | Hack and slash/Beat 'em up | 1,682 |
+| Role-playing (RPG) | 15,520 | | Turn-based strategy (TBS) | 1,646 |
+| Puzzle | 11,095 | | Tactical | 1,344 |
+| Arcade | 7,841 | | Music | 941 |
+| Shooter | 6,667 | | Real Time Strategy (RTS) | 884 |
+| Platform | 6,538 | | Quiz/Trivia | 448 |
+| Visual Novel | 4,973 | | MOBA | 93 |
+| Sport | 4,056 | | Pinball | 92 |
+| Racing | 3,791 | | | |
+
+Note what Paul's sheet has no pill for and probably wants one: **Indie** is the
+single largest genre in the catalog at 50,948 games. **Visual Novel** (4,973) and
+**Card & Board Game** (2,032) are also unrepresented. Adding any of these is a
+two-row insert on my side — say the word and they work the same day.
+
+**`device` has exactly five values** — `playstation`, `xbox`, `nintendo`, `pc`,
+`mobile`. Anything else is a 400. Note that 4,094 catalog rows (retro, arcade, VR,
+browser, Stadia) match none of the five and vanish under any device filter; that
+is correct, not a bug to report.
+
+**`sort=rating` is thin and you should know before you build the row.**
+`criticScore` is on 8,952 of 89,123 games — 10%. The other 90% sort on absence,
+not merit. It is honest for scored games and close to arbitrary below that.
+
+**`sort=recent` hides unreleased games unless you ask for them.** 3,668 catalog
+rows carry a future date and would otherwise fill the entire first page ahead of
+everything that has shipped. If you set any release window — including Upcoming —
+the window is respected exactly and nothing is capped.
+
+**`sort=best_match` is the default and is byte-identical to today's behaviour.**
+An unfiltered, unsorted `/search?q=` call returns exactly what it returned before.
