@@ -130,6 +130,46 @@ async function main() {
     check("score is not exposed in the app contract",
       partialTop !== undefined && !("score" in partialTop));
 
+    // STATUS 7 and 4b, closed by migration 20260912140000. Each of these four
+    // returned the WRONG game before that migration, and three of them did not
+    // return the right one anywhere in the top 5 -- which is why the share flow's
+    // promotion step could never reach them. They fail as a group if either new
+    // index is dropped, so a fast suite is not a passing one here.
+    const recall: [string, string][] = [
+      ["awayout", "A Way Out"],                                   // was: Away (0.444)
+      ["battlefield6", "Battlefield 6"],                          // was: Battlefield 3
+      ["dragonsdogma2", "Dragon's Dogma II"],                     // was: Dragon's Dogma
+      ["zelda botw", "The Legend of Zelda: Breath of the Wild"],  // was: Hyrule Warriors
+    ];
+    for (const [q, expected] of recall) {
+      const res = await call(`/search?q=${encodeURIComponent(q)}`, token);
+      const top = (res.body as CatalogGame[])?.[0];
+      check(`"${q}" finds ${expected} first`, top?.title === expected, top?.title ?? "no results");
+    }
+
+    // The other half of the same migration: proof it only ever ADDED candidates.
+    // Arm 5 scores a flat 0.60 floor, so anything already scoring above that is
+    // untouched -- every one of these was measured identical before and after, and
+    // a change here means the floor has been raised past the point where it is a
+    // floor. Sections 3b and 4b are where the original numbers live.
+    const unchanged: [string, string][] = [
+      ["bg3", "Baldur's Gate III"],
+      ["gta v", "Grand Theft Auto V"],
+      ["gta5", "Grand Theft Auto V"],
+      ["tw3", "The Witcher 3: Wild Hunt"],
+      ["witcher 3", "The Witcher 3: Wild Hunt"],
+      ["botw", "The Legend of Zelda: Breath of the Wild"],
+      ["god of war", "God of War"],
+      ["the last of us", "The Last of Us"],
+      ["final fantasy", "Final Fantasy"],
+      ["mario kart", "Mario Kart 8"],
+    ];
+    for (const [q, expected] of unchanged) {
+      const res = await call(`/search?q=${encodeURIComponent(q)}`, token);
+      const top = (res.body as CatalogGame[])?.[0];
+      check(`"${q}" still ranks ${expected} first`, top?.title === expected, top?.title ?? "no results");
+    }
+
     // ---- 3. /games/:id ----
     console.log("\n3. /games/:id");
     const target = results?.[rank >= 0 ? rank : 0];
