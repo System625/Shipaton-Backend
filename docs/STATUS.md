@@ -15,7 +15,7 @@ the vendor's own documentation on 4 Sep, so don't redo that research.
 ## The one-paragraph version
 
 **The Supabase half is done and verified against the real project.** All
-**thirty-six** migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer
+**thirty-seven** migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer
 matches the spec's worked example exactly, search and roulette were exercised
 against seeded rows, and RLS was confirmed to isolate two real accounts — read
 *and* write.
@@ -179,7 +179,12 @@ describes all four as of 14 Sep.
   used to PASS by asserting the bug), and a new §5b covers the direct-`PATCH` case.
   **The half that's still Sola's: a "Sync now" button** — no longer covering for a
   bug, but still the better UX, since it never requires a disconnect at all. See
-  account-linking.md §8d. **Needs `! npx supabase db push --linked`.**
+  account-linking.md §8d. **Applied and verified 15 Sep** — `npm run verify:linking`
+  passes all 50 checks against the live database, including the rewritten §5a/§5b.
+  (That same run also caught two unrelated checks broken by the catalog widening a
+  few commits earlier — Skyrim Special Edition now has its own catalog row instead
+  of collapsing into base Skyrim's, which is the widening working as intended, not a
+  regression — both fixed alongside.)
 - **The app must stop calling `total` "your Steam library".** It is only what Steam
   disclosed. "We added 4 of your 5" told Sola a library size he could see was wrong.
   Say "Added N games from Steam".
