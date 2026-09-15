@@ -180,11 +180,21 @@ async function main() {
   // MANY-TO-MANY ON PURPOSE, per Josh's second caveat: one bigId can carry several
   // title ids across 360/One/Series, and editions produce several bigIds per game.
   // The edge table already allows that; nothing here forces a winner.
-  const { data: catalogRows, error } = await admin
-    .from("games").select("id, igdb_id")
-    .in("igdb_id", [...reachable]);
-  if (error) throw new Error(error.message);
-  const uuidOf = new Map((catalogRows ?? []).map((r) => [r.igdb_id as number, r.id as string]));
+  //
+  // CHUNKED: a plain `.in("igdb_id", [...reachable])` sends every id on the URL
+  // (PostgREST's GET filter syntax, not a request body), and `reachable` runs into
+  // the thousands post-widening -- 4,353 ids here on 15 Sep. That is a request line
+  // past what a proxy in front of this project will pass, and it fails the whole
+  // call with a bare "Bad Request", nothing pointing at the actual cause.
+  const uuidOf = new Map<number, string>();
+  const reachableArr = [...reachable];
+  for (let i = 0; i < reachableArr.length; i += 500) {
+    const { data: catalogRows, error } = await admin
+      .from("games").select("id, igdb_id")
+      .in("igdb_id", reachableArr.slice(i, i + 500));
+    if (error) throw new Error(error.message);
+    for (const r of catalogRows ?? []) uuidOf.set(r.igdb_id as number, r.id as string);
+  }
 
   const edges = inCatalog.flatMap((r) => {
     const titleId = titleIdOf.get(r.uid);
