@@ -167,15 +167,19 @@ describes all four as of 14 Sep.
     licence is granted on first run, so the gate is ownership, not playtime. No
     parameter reaches these and the community XML that used to is now behind a
     login. **Permanent ceiling, not a bug.**
-- **DEFECT 8d IS OPEN and it needs a decision.** Disconnect sets
-  `source_kind='manual'` on rows the user edited, and `shelf_import_library`
-  coalesces that, so the row never rejoins `'steam'` and **its playtime freezes
-  permanently** — measured: 6.0h stays 6.0h when Steam says 25.0h. `imported_uid`
-  comes back while `source_kind` does not, so the row's provenance contradicts
-  itself and no later disconnect can clear it. Pinned by `verify:linking` §5a, where
-  three checks PASS by asserting the bug; rewrite them, do not delete them, when it
-  is fixed. **The half that matters is Sola's: a "Sync now" button, so nobody
-  disconnects merely to re-sync.** See account-linking.md §8d.
+- **DEFECT 8d IS FIXED (15 Sep).** Was: disconnect sets `source_kind='manual'` on
+  rows the user edited, and `shelf_import_library` coalesced that, so the row never
+  rejoined `'steam'` and **its playtime froze permanently** — measured: 6.0h stayed
+  6.0h when Steam said 25.0h. Fixed by `20260915150000_reimport_reclaims_hours.sql`:
+  a new `hours_played_is_own` flag, set by a trigger on any direct edit to
+  `hours_played` (the app can `PATCH` it without going through the RPC) and cleared
+  only by `shelf_import_library` itself, replaces `source_kind = p_source` as the
+  gate on reclaiming `hours_played`/`source_kind`/`imported_uid` together.
+  `verify:linking` §5a is rewritten to assert the fix (not deleted — three checks
+  used to PASS by asserting the bug), and a new §5b covers the direct-`PATCH` case.
+  **The half that's still Sola's: a "Sync now" button** — no longer covering for a
+  bug, but still the better UX, since it never requires a disconnect at all. See
+  account-linking.md §8d. **Needs `! npx supabase db push --linked`.**
 - **The app must stop calling `total` "your Steam library".** It is only what Steam
   disclosed. "We added 4 of your 5" told Sola a library size he could see was wrong.
   Say "Added N games from Steam".

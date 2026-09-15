@@ -682,7 +682,7 @@ to pay for a number you cannot see yet. This is Josh's call, not mine.
 the paywall appears after the import result. Sola owns the ordering in the app; the
 backend change is nothing beyond leaving `FREE_TIER_GAME_LIMIT` where it is.
 
-### 8d. Re-import after a disconnect freezes playtime — OPEN, needs a decision
+### 8d. Re-import after a disconnect freezes playtime — FIXED 15 Sep 2026
 
 Found 14 Sep 2026, immediately after the tester's import. Not a hypothetical:
 `verify:linking` §5a exercises it and the three assertions there **pass**, because
@@ -736,6 +736,33 @@ hours.** That likely means distinguishing "hours the user typed" from "hours nob
 has ever set", which the schema cannot currently express — so 2 is a schema question
 wearing a function-body costume, and it should not be rushed to unblock something
 that fix 1 already unblocks.
+
+**FIXED 15 Sep 2026 — option 2, built as `hours_played_is_own`.**
+`20260915150000_reimport_reclaims_hours.sql` adds a boolean column to
+`library_entries`: `false` means the last write to `hours_played` came from an
+import and `shelf_import_library` may reclaim it on the next one; `true` means a
+human set it — directly, or by hand-adding the row — and no import may touch it
+again. `shelf_import_library` now gates `hours_played`, `source_kind` and
+`imported_uid` together on `not hours_played_is_own`, replacing the old
+`source_kind = p_source` check that could never come true again once a disconnect
+set `source_kind='manual'`.
+
+The column alone was not enough, because `library_entries` carries an "own rows,
+all operations" RLS policy (`20260905000300_rls.sql`) — the app can `PATCH`
+`hours_played` directly, no RPC required, and a direct edit had to look different
+from an import's stale figure or the ambiguity option 2 was blocked on would just
+move house. A `before insert or update` trigger,
+`library_entries_hours_ownership`, closes that: it flips the flag to `true`
+whenever anything changes `hours_played` *except* `shelf_import_library` itself,
+which marks itself with a transaction-local `set_config('shelf.importing', 'on',
+true)` the trigger checks for. `shelf_import_library` is the only writer allowed
+to flip the flag back to `false`, and only on a fresh insert.
+
+Fix 1 (a "Sync now" button) is still worth building — it is the better UX, since it
+never requires a disconnect at all — but it is no longer covering for a bug. The
+freeze is fixed regardless of whether Sola builds it. `verify:linking` §5a is
+rewritten (not deleted, per the rule at the top of this section) to assert the fix,
+and a new §5b pins the direct-PATCH case the trigger exists for.
 
 ---
 

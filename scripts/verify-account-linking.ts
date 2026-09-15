@@ -235,22 +235,19 @@ async function main() {
     check("it refuses a platform argument that is really a source_kind", !!guardError,
       "otherwise disconnect('manual') would delete hand-added games");
 
-    // ---- 5a. Re-import AFTER a disconnect (defect 8d, UNDECIDED) ----
+    // ---- 5a. Re-import AFTER a disconnect (defect 8d — FIXED 15 Sep 2026) ----
     //
-    // THESE CHECKS PIN BEHAVIOUR WE BELIEVE IS WRONG. They pass because they assert
-    // what the function does today, not what it should do. Do not read a green run
-    // here as approval -- read it as "the trap is still exactly where we left it".
+    // Was: disconnect sets source_kind='manual' on every row the user had edited,
+    // and shelf_import_library's coalesce kept it that way forever — hours froze
+    // permanently the moment anyone disconnected and reconnected, which is exactly
+    // what the first outside tester reached for when his import looked wrong.
     //
-    // How you get here: disconnect sets source_kind='manual' and imported_uid=null
-    // on every row the user had edited. If the app's only re-sync affordance is
-    // "disconnect and reconnect" -- which is what the first outside tester reached
-    // for when his import looked wrong -- then every user who re-syncs walks this
-    // path, and the games affected are exactly the ones they cared enough to rate.
-    //
-    // See section 8d of docs/research/account-linking.md for the decision this is
-    // waiting on. Whichever way it goes, these assertions must be REWRITTEN rather
-    // than deleted.
-    console.log("\n5a. Re-import after a disconnect (pins defect 8d — see §8d)");
+    // Fixed in 20260915150000_reimport_reclaims_hours.sql by replacing
+    // 'source_kind = p_source' with a real ownership flag, hours_played_is_own,
+    // that survives a disconnect (disconnect never touches it) and is flipped to
+    // true only by the library_entries_hours_ownership trigger, the moment
+    // anything OTHER than shelf_import_library changes hours_played. See §8d.
+    console.log("\n5a. Re-import after a disconnect reclaims the row (defect 8d — see §8d)");
     const { data: rejoin } = await alice.client.rpc("shelf_import_library", {
       p_source: "steam",
       p_items: [{ game_id: g2.id, uid: "1091500", hours: 25.0 }],
@@ -259,26 +256,47 @@ async function main() {
       ((rejoin ?? [])[0] as { updated: number })?.updated === 1,
       `updated ${((rejoin ?? [])[0] as { updated: number })?.updated}`);
 
-    const { data: refrozen } = await alice.client.from("library_entries")
+    const { data: reclaimed } = await alice.client.from("library_entries")
       .select("hours_played, source_kind, imported_uid").eq("game_id", g2.id).single();
 
-    // The freeze. 6.0 was written before the disconnect; Steam now says 25.0.
-    check("DEFECT: hours do NOT refresh after a disconnect — frozen at 6.0 forever",
-      Number(refrozen?.hours_played) === 6.0,
-      `${refrozen?.hours_played} — if this is now 25, 8d was fixed: rewrite this check`);
-    check("DEFECT: the row never rejoins 'steam', so it can never refresh again",
-      refrozen?.source_kind === "manual",
-      refrozen?.source_kind ?? "null");
+    // 6.0 was written before the disconnect; Steam now says 25.0, and this time it
+    // sticks.
+    check("FIXED: hours refresh after a disconnect+reconnect — 6.0 -> 25.0",
+      Number(reclaimed?.hours_played) === 25.0, String(reclaimed?.hours_played));
+    check("FIXED: the row rejoins 'steam'",
+      reclaimed?.source_kind === "steam", reclaimed?.source_kind ?? "null");
+    check("and imported_uid matches the new import, so provenance agrees with itself",
+      reclaimed?.imported_uid === "1091500", reclaimed?.imported_uid ?? "null");
 
-    // And the two halves of the row's provenance now disagree with each other:
-    // imported_uid comes back (disconnect nulled it, so coalesce takes the new
-    // value) while source_kind does not (disconnect set it to a non-null 'manual',
-    // so coalesce keeps it). A later disconnect filters on source_kind and will
-    // therefore never clear this uid -- a 'manual' row carrying a Steam appid, for
-    // good.
-    check("DEFECT: imported_uid silently returns while source_kind does not",
-      refrozen?.imported_uid === "1091500",
-      `${refrozen?.imported_uid} / ${refrozen?.source_kind} — provenance disagrees with itself`);
+    // But the "do not relitigate the shelf" rule from §4 must still hold: status,
+    // rating and notes were never touched by any of this.
+    const { data: stillBeaten } = await alice.client.from("library_entries")
+      .select("status, rating, notes").eq("game_id", g2.id).single();
+    check("status/rating/notes survived the reclaim untouched",
+      stillBeaten?.status === "beaten" && stillBeaten?.rating === 9 && stillBeaten?.notes === "loved it",
+      JSON.stringify(stillBeaten));
+
+    // ---- 5b. A human editing hours directly still wins, RPC or no RPC ----
+    //
+    // library_entries carries an "own rows, all operations" RLS policy, so the app
+    // can PATCH hours_played without going through shelf_import_library at all.
+    // The ownership flag has to catch that path too, or a user's own edit would
+    // look identical to an import's stale figure and get silently overwritten on
+    // the next sync.
+    console.log("\n5b. A direct edit to hours_played is never overwritten by a later import");
+    const { error: patchError } = await alice.client.from("library_entries")
+      .update({ hours_played: 40 }).eq("game_id", g2.id);
+    check("the direct edit was written", !patchError, patchError?.message);
+
+    const { data: afterImportAgain } = await alice.client.rpc("shelf_import_library", {
+      p_source: "steam", p_items: [{ game_id: g2.id, uid: "1091500", hours: 60.0 }],
+    });
+    check("the RPC still reports touching the row",
+      ((afterImportAgain ?? [])[0] as { updated: number })?.updated === 1);
+    const { data: stillHuman } = await alice.client.from("library_entries")
+      .select("hours_played").eq("game_id", g2.id).single();
+    check("but hours stayed at the human's 40, not the import's 60",
+      Number(stillHuman?.hours_played) === 40, String(stillHuman?.hours_played));
 
     // ---- 6. The deployed endpoints ----
     //
