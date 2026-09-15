@@ -152,6 +152,19 @@ All four functions are deployed — `steam-link-callback` with `verify_jwt = fal
 which it must have, since Steam's redirect cannot carry a JWT. `docs/openapi.yaml`
 describes all four as of 14 Sep.
 
+### CSV importer: researched down to Grouvee, and it beats Xbox's threshold
+
+The doc used to name four candidates (Backloggd, GG, Grouvee, Minimap) on the
+assumption all four export. **Checked 15 Sep: only Grouvee does.** Backloggd and GG
+CSV export are both open feature requests, not shipped; Minimap shows no evidence of
+one. Grouvee's export is real, login-gated, and carries a `giantbomb_id` column.
+
+`npx tsx scripts/link-lab/giantbomb-bridge.ts` measured IGDB's GiantBomb coverage
+(source 3, same mechanism as Steam/Android) the same way the Xbox bridge was
+measured: **75.9% of a tracked library (≥5 ratings) carries a GiantBomb id** —
+above Josh's 70% bar, unlike Xbox's 62.9%. Build it **id-first**, matcher as
+fallback — the reverse of the Xbox call. Research doc §10.
+
 ### Still open here
 
 - **The OpenID handshake works — Sola drove it end to end on 14 Sep.** That was the
