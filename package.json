@@ -28,6 +28,8 @@
     "verify:wishlist": "tsx scripts/verify-wishlist.ts",
     "verify:linking": "tsx scripts/verify-account-linking.ts",
     "verify:search-filters": "tsx scripts/verify-search-filters.ts",
+    "verify:friend-discovery": "tsx scripts/verify-friend-discovery.ts",
+    "verify:account-delete": "tsx scripts/verify-account-delete.ts",
     "lab:steam-library": "tsx scripts/link-lab/real-steam-library.ts",
     "lab:xbox-bridge": "tsx scripts/link-lab/xbox-title-bridge.ts",
     "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
