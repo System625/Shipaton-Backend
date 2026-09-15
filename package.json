@@ -35,6 +35,7 @@
     "verify:account-delete": "tsx scripts/verify-account-delete.ts",
     "lab:steam-library": "tsx scripts/link-lab/real-steam-library.ts",
     "lab:xbox-bridge": "tsx scripts/link-lab/xbox-title-bridge.ts",
+    "android:manifest": "tsx scripts/generate-android-manifest.ts",
     "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
     "lab:eval": "tsx scripts/search-lab/run-eval.ts"
   },

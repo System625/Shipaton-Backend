@@ -1,10 +1,15 @@
 // The platform-agnostic half of an import: clamp, resolve, write, report.
 //
-// Steam and Xbox are the two callers. `importToLibrary` below is the Steam shape
-// — one source resolves and writes under the same name. Xbox needs a second
-// function, `importXboxLibrary`, because its resolution is two-stage: a
-// deterministic id bridge first (game_external_ids source 'xbox_title', DIFFERENT
-// from the 'xbox' write source — see 20260915170000_xbox_title_source.sql), then
+// Steam, Android and Xbox are the three callers. `importToLibrary` below is the
+// Steam/Android shape — one source resolves and writes under the same name, and
+// it is literally the same function for both: Android's package names are a
+// direct join (game_external_ids source 'android', IGDB source 15) exactly like
+// Steam's appids are, just with no OAuth handshake in front of them and no
+// playtime behind them (hours is always 0 — package detection alone does not tell
+// us how long anything was played). Xbox needs a second function,
+// `importXboxLibrary`, because its resolution is two-stage: a deterministic id
+// bridge first (game_external_ids source 'xbox_title', DIFFERENT from the 'xbox'
+// write source — see 20260915170000_xbox_title_source.sql), then
 // shelf_search_games as a name-match fallback for the ~37-44% the bridge misses
 // (docs/research/account-linking.md §4a measured 62.9%/55.6%). Both still land in
 // the same shelf_import_library call, one write, source_kind='xbox' either way.
@@ -62,7 +67,7 @@ export type ImportResult = {
  */
 export async function importToLibrary(
   supabase: RpcClient,
-  source: "steam" | "xbox" | "psn",
+  source: "steam" | "xbox" | "psn" | "android",
   items: ImportItem[],
 ): Promise<ImportResult> {
   if (items.length === 0) {

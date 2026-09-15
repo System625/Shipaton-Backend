@@ -30,6 +30,15 @@ const XBL_API_BASE = "https://xbl.io/api/v2";
  * xbl.io dashboard; it is not customized per request the way Steam's `return_to`
  * is.
  *
+ * RE-CHECKED 15 Sep 2026 via a real Chrome session, not just a server-side fetch,
+ * on the theory that the block might be a bot-detection challenge a real browser
+ * clears: it is not. `xbl.io` hard-blocks the entire domain (`/`, not only
+ * `/docs`) for this network regardless of client. GitHub's `OpenXBL/Docs` and
+ * `OpenXBL/OpenXBL-PHP` were re-read in full and add nothing new here — no
+ * `state`/correlation param anywhere in either repo. Confirms the reasoning
+ * above rather than replacing it; do not re-attempt this from a browser again
+ * without a new reason to think it would differ.
+ *
  * This function appends `?state=<value>` speculatively, on the bet that xbl.io's
  * redirect passes through an unrecognized query param rather than dropping it —
  * a common pattern for thin OAuth proxies, but NOT confirmed for this one. If the
@@ -83,7 +92,11 @@ export async function fetchXboxAccount(apiKey: string, xuid: string): Promise<Xb
     headers: delegatedHeaders(apiKey),
   });
   if (!res.ok) return null;
-  // UNVERIFIED #2 shape note applies here too -- see fetchXboxTitleHistory.
+  // This part of #2 is NOW VERIFIED, 15 Sep 2026: OpenXBL/Docs' account.json
+  // carries a real worked example for this exact endpoint --
+  // `profileUsers[].settings[]` as `{id, value}` pairs -- matching what this
+  // function already assumed, field for field. titleHistory is the part of #2
+  // that remains unverified; see fetchXboxTitleHistory below.
   const body = await res.json() as {
     profileUsers?: { settings?: { id: string; value: string }[] }[];
   };

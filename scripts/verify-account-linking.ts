@@ -414,6 +414,52 @@ async function main() {
     check("the 9,120h row survived the clamp", Number(longest?.hours_played) === 9120.6,
       String(longest?.hours_played));
 
+    // ---- 8. Android import — a direct join, no OAuth, no human needed ----
+    //
+    // Unlike Xbox, this is fully testable without a live account: the "auth" is
+    // on-device package detection, which the app simulates here by simply posting
+    // real android-sourced uids from game_external_ids. §7: IGDB source 15 stores
+    // the Play Store package name verbatim, so this is the same direct-join shape
+    // as Steam, just with no handshake in front of it and no playtime behind it.
+    console.log("\n8. Android import (direct join, no handshake)");
+    const { data: androidEdges, error: androidEdgeError } = await admin
+      .from("game_external_ids").select("uid, game_id").eq("source", "android").limit(3);
+    check("the android edges exist to test against", !androidEdgeError && (androidEdges?.length ?? 0) >= 2,
+      androidEdgeError?.message ?? `${androidEdges?.length ?? 0} edges`);
+
+    if ((androidEdges?.length ?? 0) >= 2) {
+      const rows = androidEdges! as { uid: string; game_id: string }[];
+      const bogus = "com.shelf.verify.nonexistent.package.does.not.exist";
+
+      const imported = await fetch(`${fnBase}/android-import`, authed({
+        packages: [rows[0].uid, rows[1].uid, rows[0].uid, bogus],
+      }));
+      const res = await imported.json() as { total: number; matched: number; inserted: number; unmatched: string[] };
+      check("/android-import succeeds", imported.status === 200, JSON.stringify(res));
+      check("the duplicate package collapses before resolving (3 unique, not 4)",
+        res.total === 3, `total ${res.total}`);
+      check("the two real packages resolve", res.matched === 2, `matched ${res.matched}`);
+      check("the bogus package is reported unmatched", res.unmatched.includes(bogus),
+        JSON.stringify(res.unmatched));
+
+      const { data: androidRows } = await alice.client.from("library_entries")
+        .select("game_id, source_kind, hours_played, imported_uid")
+        .in("game_id", [rows[0].game_id, rows[1].game_id]);
+      check("both rows landed with source_kind 'android'",
+        (androidRows ?? []).every((r) => r.source_kind === "android"), JSON.stringify(androidRows));
+      check("hours is 0 — package detection carries no playtime",
+        (androidRows ?? []).every((r) => Number(r.hours_played) === 0), JSON.stringify(androidRows));
+
+      const badBody = await fetch(`${fnBase}/android-import`, authed({ packages: "not-an-array" }));
+      check("a malformed body is rejected, not 500'd", badBody.status === 400, String(badBody.status));
+
+      const { data: androidRemoved } = await alice.client
+        .rpc("shelf_disconnect_platform", { p_platform: "android" });
+      const androidRemovedCount = ((androidRemoved ?? [])[0] as { removed_entries: number })?.removed_entries;
+      check("disconnect('android') removes the untouched imported rows",
+        androidRemovedCount === 2, `removed ${androidRemovedCount}`);
+    }
+
   } finally {
     await removeAccounts([alice, bob]);
   }

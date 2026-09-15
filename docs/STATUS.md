@@ -228,8 +228,51 @@ fallback — the reverse of the Xbox call. Research doc §10.
   stood before Sola drove it for real on 14 Sep. **The user has someone with a
   real Xbox account lined up to test it** — until that happens, do not read the
   deploy as "Xbox linking works." Research doc §4.
-- **Android and PlayStation are not built.** Steps 3 and 5 of the research doc's
-  build order.
+
+  **Checked 15 Sep whether a real browser gets past the Cloudflare block that has
+  kept the interactive docs site unreachable since 15 Sep:** it does not — `xbl.io`
+  hard-blocks the whole domain (`/`, not just `/docs`) for this network regardless
+  of client, so this is not a bot-challenge a browser session clears. GitHub's
+  `OpenXBL/Docs` and `OpenXBL/OpenXBL-PHP` remain the only reachable sources and
+  were re-read in full: `account.json` now confirms the `/account` response shape
+  `fetchXboxAccount` already assumed (`profileUsers[].settings[]` id/value pairs,
+  matching exactly), but `titleHistory` has no published schema anywhere reachable
+  — `openapi.yaml` lists the endpoint with no response body, same as before — and
+  `Auth.php`'s `getLoginUrl()` takes no parameters at all, confirming no
+  correlation param is a documented, supported thing rather than merely
+  undocumented. **Both real unknowns stand exactly where they stood 15 Sep
+  morning; only the human test closes them, not more reading.**
+- **Android is built (15 Sep).** Step 3 of the research doc's build order —
+  `android-import`, `20260915180000_android_import.sql`. §7's finding: IGDB source
+  15 stores the Play Store package name verbatim, so this is a **direct join with
+  no OAuth handshake at all** — the app detects installed packages on-device
+  (Josh's `<queries>` manifest trick) and posts the hits straight to
+  `android-import` under its own JWT. `importToLibrary` in
+  `_shared/platform-import.ts` needed no new logic, only a widened source union —
+  it is the exact same function Steam's import already used, source `'android'`
+  instead of `'steam'`. Schema-side, `library_entries_source_kind_check`,
+  `shelf_import_library` and `shelf_disconnect_platform` all needed `'android'`
+  added to their allow-lists; `game_external_ids` already permitted it (it has
+  since `20260914100000`, seeded with 479 edges same day). **Hours are always 0**
+  — package detection says a game is installed, not how long it has been played,
+  same caveat as Xbox's unbuilt playtime. **No `platform_accounts` row** —
+  there is no account to connect, so "disconnect" only ever meant "forget the
+  rows this scan wrote," which `shelf_disconnect_platform('android')` already does
+  without one. `npm run verify:linking` §8 drives the deployed endpoint end to
+  end against real android-sourced `game_external_ids` rows — dedupe, the
+  resolve/unmatched split, the write, and disconnect, no human or OAuth required
+  to test any of it (unlike Xbox). **What Sola needs and does not yet have:** the
+  curated package list for the app's manifest. `npm run android:manifest [count]`
+  prints it straight from `game_external_ids` (default top 500, matching the
+  research doc's own number) so the app's list and the catalog cannot disagree —
+  generated 15 Sep into `docs/android-manifest-packages.xml` (490 unique
+  packages; requesting 500 games and deduping shared/multi-edge uids lands just
+  short of 500, not a bug worth chasing further) and the same list as
+  `docs/android-manifest-packages.json` for the app's own resolve step. Neither
+  file is handed to Sola yet.
+- **PlayStation is not built.** Step 5 of the research doc's build order, and the
+  last of the five sources — behind by design (§5: highest effort, highest risk,
+  worst UX, and IDs that do not join even when it works).
 - **The CSV importer is scoped but not built.** Researched down to Grouvee only
   (Backloggd and GG have no export; Minimap shows no evidence of one) and measured
   at 75.9% via `giantbomb_id` — clears the id-first threshold, cheapest of the
