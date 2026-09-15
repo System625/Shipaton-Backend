@@ -19,6 +19,7 @@
 import { igdbQuery } from "../supabase/functions/_shared/igdb.ts";
 import { igdbCreds } from "./env.ts";
 import { admin } from "./supabase-admin.ts";
+import { pathToFileURL } from "node:url";
 
 const creds = igdbCreds();
 
@@ -34,19 +35,48 @@ const SOURCES: { name: string; igdbSource: number; note: string }[] = [
 
 type ExternalRow = { id: number; game?: number; uid?: string };
 
-/** Every igdb_id we hold, mapped to its catalog uuid. ~89k rows, one pass. */
-async function catalogByIgdbId(): Promise<Map<number, string>> {
+/**
+ * Every igdb_id we hold, mapped to its catalog uuid. One pass, keyset paged.
+ *
+ * THIS USED `.range(from, from + 999)` WITH NO `.order()`, AND IT SILENTLY READ ABOUT
+ * TWO THIRDS OF THE CATALOG. Postgres guarantees no row order without an ORDER BY, so
+ * successive OFFSET windows over the same query can skip rows and repeat others. It
+ * never errored and it never looked wrong: it printed a large, plausible number and
+ * seeded a partial table. Measured 15 Sep against 91,806 eligible rows --
+ *
+ *     true count:        91806
+ *     offset paging, #1: 59879
+ *     offset paging, #2: 59212     <- same data, same code, 667 rows apart
+ *     keyset paging:     91806
+ *
+ * -- so roughly a third of the catalog had no store ids written for it, and WHICH
+ * third changed every run. Every import that joins through this table was quietly
+ * falling back to name matching for those games.
+ *
+ * Keyset paging on `igdb_id` is stable because it carries its own ordering: each page
+ * asks for rows after the last id it saw, so a row cannot be skipped by a shifting
+ * window. It is the same thing pullSource() below already does against IGDB, and the
+ * reason is the same one stated there.
+ *
+ * The lesson generalises: a paged read whose page boundary is a COUNT rather than a
+ * VALUE is only correct if the order is pinned. `npm run verify:external-id-paging`
+ * asserts this one against the true count.
+ */
+export async function catalogByIgdbId(): Promise<Map<number, string>> {
   const map = new Map<number, string>();
-  for (let from = 0; ; from += 1000) {
+  let after = 0;
+  for (;;) {
     const { data, error } = await admin
       .from("games")
       .select("id, igdb_id")
       .not("igdb_id", "is", null)
-      .range(from, from + 999);
+      .gt("igdb_id", after)
+      .order("igdb_id", { ascending: true })
+      .limit(1000);
     if (error) throw new Error(`games read failed: ${error.message}`);
     if (!data || data.length === 0) break;
     for (const row of data) map.set(row.igdb_id as number, row.id as string);
-    if (data.length < 1000) break;
+    after = data[data.length - 1].igdb_id as number;
   }
   return map;
 }
@@ -163,4 +193,11 @@ async function main() {
   summary.forEach((s) => console.log("  " + s));
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// Only when run directly. `catalogByIgdbId` is exported above so that
+// verify-external-id-paging.ts can exercise THE REAL FUNCTION rather than a copy of
+// it -- a copied paging loop is how the bug it checks for would come back.
+const isEntryPoint = process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntryPoint) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}

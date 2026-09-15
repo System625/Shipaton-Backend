@@ -173,6 +173,12 @@ const SEED_TYPE_CLAUSES =
   "game_type = 0 & parent_game = null & version_parent = null";
 
 /**
+ * The IGDB game types the re-release pass admits — 8 Remake, 9 Remaster, 10
+ * Expanded Game, 11 Port, 4 Standalone Expansion. See seedRereleasePageQuery.
+ */
+export const REREL_TYPES = [4, 8, 9, 10, 11] as const;
+
+/**
  * One page of the recent-releases pass. Pages by id rather than deep `offset`,
  * which degrades badly past a few thousand rows. `limit` maxes at 500.
  */
@@ -216,6 +222,66 @@ export function seedPopularPageQuery(
     `${GAME_FIELDS} ` +
     `where id > ${afterId} & ${SEED_TYPE_CLAUSES} ` +
     `& first_release_date < ${releasedBeforeUnix} ` +
+    `& total_rating_count >= ${minRatingCount}; ` +
+    `sort id asc; limit ${limit};`
+  );
+}
+
+/**
+ * The re-release pass, added 15 Sep 2026. Admits the versions people actually name.
+ *
+ * Passes 1 and 2 filter to `game_type = 0 & parent_game = null & version_parent =
+ * null`, which correctly removes "Deluxe Edition" and DLC noise — and also removes
+ * every remake, remaster, port and expanded edition, because those carry a
+ * `parent_game`. Measured 11 Sep against live IGDB: **2,042 rows with >= 5 ratings
+ * were excluded**, including Resident Evil 2 (2019), Resident Evil 4 (2023),
+ * Persona 5 Royal, Mario Kart 8 Deluxe, The Last of Us Part I and Dark Souls:
+ * Remastered. The catalog's `Resident Evil 2` was the 1998 original. Greenlit by
+ * Josh 15 Sep; the full argument is research/semantic-search.md §5.
+ *
+ * ADMITTED: 8 Remake, 9 Remaster, 10 Expanded Game, 11 Port, 4 Standalone
+ * Expansion. NOT 2 Expansion (meaningless without its base game), NOT 3 Bundle,
+ * NOT 1 DLC. That list is a product decision, not a technical one — do not widen
+ * it without re-reading §5.
+ *
+ * Three clauses this pass deliberately does NOT carry:
+ *
+ *  - **No `parent_game = null`.** It is the whole point: every row here has a
+ *    parent — all 2,043 of them, measured.
+ *  - **No `version_parent = null`.** This one lets 23 edition rows in, measured
+ *    15 Sep: Bulletstorm: Full Clip Edition (94 ratings), Deus Ex: Game of the Year
+ *    Edition (58), Age of Mythology: Extended Edition (51), and 20 more below 50.
+ *    **Kept deliberately.** The three-clause filter on passes 1 and 2 exists to keep
+ *    Deluxe and Collector's editions of a game we already hold off the confirm
+ *    screen; these are a different animal — several are the canonical version people
+ *    actually play (the GOTY Deus Ex, the Extended Edition of Age of Mythology), they
+ *    carry suffixed titles so they never collide on exact match, and the ranking's
+ *    popularity term puts the base game above them anyway. Filtering them would also
+ *    move the pass off the 2,042 that §5's decision was measured on. `verify:seed-
+ *    widening` §3 pins the set: it PASSES on 23-ish rows all under 150 ratings and
+ *    FAILS if something big ever gets re-typed into that opening.
+ *  - **No date window.** Passes 1 and 2 split the id space by release date so they
+ *    cannot return the same row; this pass is disjoint from both by `game_type`
+ *    instead, so it needs no window and must not have one — a 2019 remake of a 1998
+ *    game belongs in the catalog whichever side of the window it falls.
+ *  - **No popularity exemption for recent releases.** Pass 1 admits any main game
+ *    since 2023 with no rating floor; this pass applies the floor to everything.
+ *    That is on purpose: without it the pass admits thousands of unrated mobile
+ *    ports. The floor is what makes the count 2,042 rather than tens of thousands.
+ *
+ * `game_type = (4,8,9,10,11)` is Apicalypse's "equal to any of" on a scalar field.
+ * Verified against live IGDB rather than assumed — `npm run verify:seed-widening`
+ * proves the union matches the five per-type queries exactly and that no other type
+ * comes back.
+ */
+export function seedRereleasePageQuery(
+  afterId: number,
+  minRatingCount: number,
+  limit = 500,
+): string {
+  return (
+    `${GAME_FIELDS} ` +
+    `where id > ${afterId} & game_type = (${REREL_TYPES.join(",")}) ` +
     `& total_rating_count >= ${minRatingCount}; ` +
     `sort id asc; limit ${limit};`
   );

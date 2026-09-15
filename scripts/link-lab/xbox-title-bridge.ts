@@ -75,20 +75,29 @@ async function displayCatalog(bigIds: string[]): Promise<Map<string, string>> {
 async function xboxCatalogIgdbIds(): Promise<{ all: Set<number>; rated: Set<number> }> {
   const all = new Set<number>();
   const rated = new Set<number>();
-  for (let from = 0; ; from += 1000) {
+  // Keyset, not OFFSET. The `.range()` version of this loop read a different and
+  // incomplete subset of the catalog on every run -- no ORDER BY means no stable row
+  // order, so the windows skip and repeat (see seed-external-ids.ts for the measured
+  // numbers). THE 63.3% BRIDGE FIGURE FROM 14 SEP WAS MEASURED THAT WAY and its
+  // denominator was therefore about two thirds of the eligible catalog. Re-run this
+  // before anyone builds on that number.
+  let after = 0;
+  for (;;) {
     const { data, error } = await admin
       .from("games")
       .select("igdb_id, total_rating_count, game_platforms!inner(platform_id)")
       .in("game_platforms.platform_id", [49, 169, 12])
       .not("igdb_id", "is", null)
-      .range(from, from + 999);
+      .gt("igdb_id", after)
+      .order("igdb_id", { ascending: true })
+      .limit(1000);
     if (error) throw new Error(error.message);
     if (!data || data.length === 0) break;
     for (const r of data) {
       all.add(r.igdb_id as number);
       if ((r.total_rating_count as number ?? 0) >= 5) rated.add(r.igdb_id as number);
     }
-    if (data.length < 1000) break;
+    after = data[data.length - 1].igdb_id as number;
   }
   return { all, rated };
 }

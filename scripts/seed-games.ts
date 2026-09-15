@@ -9,19 +9,36 @@
 // limit maxes at 500 and IGDB allows 4 req/sec, so ~100k games is ~200 requests
 // for the games themselves plus the same again for time-to-beat.
 //
-// TWO PASSES, both from spec §2: "everything from the last 3 years, plus anything
-// popular enough to matter". Only the first was implemented until 7 Sep, which left
-// the catalog with none of Elden Ring, The Witcher 3, GTA V, Cyberpunk 2077, BotW,
-// RDR2, Hollow Knight or Stardew Valley — the wrong half of the library for an app
-// whose whole subject is the backlog you already own. See seedPopularPageQuery.
+// THREE PASSES. The first two are spec §2: "everything from the last 3 years, plus
+// anything popular enough to matter". Only the first was implemented until 7 Sep,
+// which left the catalog with none of Elden Ring, The Witcher 3, GTA V, Cyberpunk
+// 2077, BotW, RDR2, Hollow Knight or Stardew Valley — the wrong half of the library
+// for an app whose whole subject is the backlog you already own. See
+// seedPopularPageQuery.
+//
+// The third pass was added 15 Sep and admits remakes, remasters, ports, expanded
+// editions and standalone expansions with >= 5 ratings — ~2,042 rows that passes 1
+// and 2 cannot see, because those filter `parent_game = null` and every re-release
+// has a parent. Before it, the catalog's `Resident Evil 2` was the 1998 original and
+// the 2019 remake with 2.4x the ratings was absent. See seedRereleasePageQuery and
+// research/semantic-search.md §5.
+//
+// The three passes CANNOT return the same row: 1 and 2 split the id space by release
+// date (disjoint `>=` / `<`), and 3 is disjoint from both by game_type.
 //
 // Each pass resumes independently; an interrupted run prints the exact env var to
-// set. The two id cursors are separate because the passes walk id space separately.
+// set. The three id cursors are separate because the passes walk id space separately.
+//
+// RE-SEEDING AFTER A CODE CHANGE: run from zero, with none of the resume vars set.
+// Resume is for interruptions. A resumed run leaves every row it skips carrying the
+// old mapper's output — which is exactly how `summary`, `themes` and `keywords` sat
+// null on all 89,123 rows for four days after the columns were added on 11 Sep.
 
 import {
   igdbQuery,
   seedPageQuery,
   seedPopularPageQuery,
+  seedRereleasePageQuery,
   type IgdbGame,
 } from "../supabase/functions/_shared/igdb.ts";
 import {
@@ -106,19 +123,29 @@ async function runPass(
 }
 
 const recent = await runPass(
-  `pass 1/2 — released since ${since}`,
+  `pass 1/3 — released since ${since}`,
   "SEED_RESUME_AFTER_ID",
   (afterId) => seedPageQuery(afterId, sinceUnix),
 );
 
 const backCatalogue = await runPass(
-  `pass 2/2 — before ${since}, total_rating_count >= ${minPopularity}`,
+  `pass 2/3 — before ${since}, total_rating_count >= ${minPopularity}`,
   "SEED_RESUME_POPULAR_AFTER_ID",
   (afterId) => seedPopularPageQuery(afterId, sinceUnix, minPopularity),
 );
 
+const rereleases = await runPass(
+  `pass 3/3 — remakes, remasters, ports and expanded editions, ` +
+    `total_rating_count >= ${minPopularity}`,
+  "SEED_RESUME_REREL_AFTER_ID",
+  (afterId) => seedRereleasePageQuery(afterId, minPopularity),
+);
+
+const games = recent.games + backCatalogue.games + rereleases.games;
+const altTitles = recent.altTitles + backCatalogue.altTitles + rereleases.altTitles;
+
 console.log(
-  `\ndone. ${recent.games + backCatalogue.games} games, ` +
-  `${recent.altTitles + backCatalogue.altTitles} alternative titles ` +
-  `(${recent.games} recent, ${backCatalogue.games} back catalogue).`,
+  `\ndone. ${games} games, ${altTitles} alternative titles ` +
+  `(${recent.games} recent, ${backCatalogue.games} back catalogue, ` +
+  `${rereleases.games} re-releases).`,
 );
