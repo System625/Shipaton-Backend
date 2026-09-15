@@ -65,8 +65,9 @@ share ingestion.
 > agrees with him: Microsoft's DisplayCatalog bridges Store product id → Xbox Live
 > title id, and it works on **92.5%** of the ids we hold. What it cannot fix is how
 > few of our Xbox games IGDB gives a Microsoft id to in the first place, which caps
-> the deterministic route at **55.5%** of our Xbox catalog (63.3% of the rated
-> subset) against name matching's measured 97.0%. So the bridge is real and is worth
+> the deterministic route at **55.6%** of our Xbox catalog (62.9% of the rated
+> subset, re-measured 15 Sep after the paging fix) against name matching's measured
+> 97.0%. So the bridge is real and is worth
 > building as a precision layer — it is just not a replacement for the matcher.
 > Full numbers in **section 4a**.
 
@@ -480,7 +481,7 @@ tier, and even then treat 500/hour as an app-wide budget to be divided.
 **The catch, and it is now measured rather than asserted: the title IDs do not join
 *in IGDB*, but they can be bridged.** See 4a.
 
-### 4a. The DisplayCatalog bridge — measured 14 Sep 2026
+### 4a. The DisplayCatalog bridge — measured 14 Sep, re-measured 15 Sep 2026
 
 Josh challenged the "no lookup table at any price" line on 14 Sep and set the test
 himself: *"run the batch job first and measure it... If it's above 70% you're in
@@ -497,34 +498,32 @@ array, and `XboxTitleId` is in it:
 | IGDB `microsoft` external rows | 15,545 |
 | …that are 360-era GUIDs, not bigIds | 1,132 (excluded — DisplayCatalog cannot look these up) |
 | …that are Store product ids | 14,413 |
-| …for games in **our** catalog | 4,740 |
-| **of those, returned an `XboxTitleId`** | **4,386 = 92.5%** |
+| …for games in **our** catalog | 5,154 |
+| **of those, returned an `XboxTitleId`** | **4,765 = 92.5%** |
 
 **The limiter is exactly where Josh predicted it would be — IGDB's Microsoft
-coverage, not the bridge.** Our catalog holds 7,223 games on an Xbox platform
+coverage, not the bridge.** Our catalog holds 7,831 games on an Xbox platform
 (49, 169, 12):
 
 | denominator | carry any Microsoft id | reachable by title id |
 |---|---|---|
-| all 7,223 Xbox catalog games | 4,097 = 56.7% | **4,006 = 55.5%** |
-| the 4,301 with ≥ 5 ratings | 2,789 = 64.8% | **2,722 = 63.3%** |
+| all 7,831 Xbox catalog games | 4,464 = 57.0% | **4,353 = 55.6%** |
+| the 4,884 with ≥ 5 ratings | 3,157 = 64.6% | **3,070 = 62.9%** |
 
 The rated subset is the fairer proxy — an import only ever sees games somebody
-actually played, and played libraries are popularity-weighted — so **63.3% is the
-number to quote and 55.5% is the floor.**
+actually played, and played libraries are popularity-weighted — so **62.9% is the
+number to quote and 55.6% is the floor.**
 
-> **CAVEAT ADDED 15 Sep: these four numbers rest on a broken denominator.** The script
-> that built them, `link-lab/xbox-title-bridge.ts`, paged the catalog with an
-> unordered `.range()` and therefore saw an arbitrary ~two thirds of the eligible
-> rows, differing run to run (§10, prerequisite). The *ratio* may well survive — the
-> sample is arbitrary rather than biased toward or against having a Microsoft id —
-> but "7,223 Xbox catalog games" and "4,301 with ≥ 5 ratings" are both wrong, and the
-> catalog has since grown to 91,806 rows besides. The paging is fixed. **Re-run
-> `npm run lab:xbox-bridge` before quoting 63.3% again**, and treat every figure in
-> this table as unconfirmed until then.
+> **RE-RUN 15 Sep confirms the ratio, as predicted.** The 14 Sep numbers were
+> measured with the `.range()` paging bug (§10) and covered an arbitrary ~two
+> thirds of the catalog; the catalog has also grown to 91,806 rows since. Re-running
+> after both the paging fix and the growth moved every denominator (7,223 → 7,831
+> Xbox games, 4,301 → 4,884 rated) but the ratio barely moved: **63.3% → 62.9%**
+> rated, **55.5% → 55.6%** floor. Treat 62.9%/55.6% as the confirmed numbers; the
+> verdict below did not need to change.
 
 **Verdict: between Josh's two thresholds, so neither of his conclusions fires.**
-63.3% is below the 70% that would justify building id-first and above the 50% that
+62.9% is below the 70% that would justify building id-first and above the 50% that
 would send us back to name matching alone. The decision that follows is not either
 of the two he named:
 
@@ -537,7 +536,7 @@ of the two he named:
 > costs one extra SQL lookup.
 
 **And it does not re-rank the build order.** The argument for moving Xbox ahead of
-Android was that a deterministic join would make Xbox as cheap as Steam. At 63.3%
+Android was that a deterministic join would make Xbox as cheap as Steam. At 62.9%
 it does not: the name matcher still has to be wired up, which was the whole cost of
 the Xbox build. Xbox stays at step 4. What has changed is that when it is built, a
 measured two thirds of it will be exact rather than fuzzy.
@@ -788,8 +787,8 @@ they come out of the same IGDB pull.
 
    **`scripts/link-lab/xbox-title-bridge.ts` had the identical loop**, so the **63.3%
    bridge figure in §4a was measured over about two thirds of the eligible catalog**.
-   The loop is fixed; the number has not been re-measured and should be before anyone
-   builds on it.
+   **RE-MEASURED 15 Sep** with the loop fixed: **62.9%**, confirming the ratio held.
+   See §4a.
 
 1. **Steam** — OpenID edge function, `GetOwnedGames`, direct join, parent hop.
    **BUILT 14 Sep** — four functions (`steam-link-start`, `steam-link-callback`,
@@ -803,7 +802,7 @@ they come out of the same IGDB pull.
 3. **Android package detection** — direct join, and it is a genuine Android-exclusive
    feature and a Galaxy Store argument.
 4. **Xbox** — OpenXBL delegated auth, title history, **the DisplayCatalog title-id
-   bridge for the 63.3% it reaches (section 4a), name matching for the rest.** A
+   bridge for the 62.9% it reaches (section 4a), name matching for the rest.** A
    day. Import-only: we are on the free 150 req/hour tier and that ceiling is
    app-wide.
 5. **PlayStation** — tokens-not-NPSSO, name matching, behind an advanced disclosure.
@@ -841,12 +840,13 @@ already annoyed at an app that has not shipped a feature since 2023.
    **CONFIRMED 14 Sep** — the policy names Steam, which satisfies the Steam Web API
    terms. Nothing further blocks the Steam import on policy grounds.
 5. **Nothing for PlayStation yet.** Do not create anything until 1–4 are shipped.
-6. ~~**Measure the DisplayCatalog bridge before re-ranking Xbox.**~~ **DONE 14 Sep**
-   — the job is `npm run lab:xbox-bridge` and section 4a has the numbers. Short
-   version: the bridge works (92.5%), IGDB's Microsoft coverage caps it at 63.3% of
-   a played library, that lands between your two thresholds, so it becomes a
-   precision layer over the name matcher rather than a replacement, and **Xbox does
-   not move ahead of Android.**
+6. ~~**Measure the DisplayCatalog bridge before re-ranking Xbox.**~~ **DONE 14 Sep,
+   RE-MEASURED 15 Sep after the paging fix** — the job is `npm run lab:xbox-bridge`
+   and section 4a has the numbers. Short version: the bridge works (92.5%), IGDB's
+   Microsoft coverage caps it at 62.9% of a played library (was 63.3% on the buggy
+   denominator — the ratio held), that lands between your two thresholds, so it
+   becomes a precision layer over the name matcher rather than a replacement, and
+   **Xbox does not move ahead of Android.**
 
 **What is now owed to you rather than by you:** the Steam and OpenXBL keys must be
 set as **Supabase secrets** before any of the new functions can read them. They are

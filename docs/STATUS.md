@@ -137,16 +137,16 @@ with this.
 
 `npm run lab:xbox-bridge`. The bridge is real — 92.5% of our Microsoft store ids
 return an `XboxTitleId` — but IGDB's Microsoft coverage caps the deterministic route
-at **63.3%** of a played library. That is between Josh's two thresholds, so the call
+at **62.9%** of a played library. That is between Josh's two thresholds, so the call
 is: build it as a **precision layer over** the name matcher (97.0% rank-1), not as a
 replacement, and **Xbox does not move ahead of Android** in the build order. Research
 doc §4a.
 
-**Treat 63.3% as unconfirmed until it is re-measured.** The script that produced it
-carried the paging bug in §16, so it measured an arbitrary ~two thirds of the eligible
-catalog. The *decision* above probably survives — a ratio over an arbitrary sample, and
-55.5%–63.3% would have to move a long way to cross either threshold — but the numbers
-do not. Re-run `npm run lab:xbox-bridge` now that the loop is fixed.
+**RE-MEASURED 15 Sep, confirmed.** The 63.3% above was produced by a script carrying
+the §16 paging bug — an arbitrary ~two thirds of the eligible catalog, on a catalog
+that has since grown to 91,806 rows. Re-run with the loop fixed: **62.9%** rated /
+**55.6%** floor (was 63.3% / 55.5%). The ratio barely moved and the decision above did
+not change.
 
 All four functions are deployed — `steam-link-callback` with `verify_jwt = false`,
 which it must have, since Steam's redirect cannot carry a JWT. `docs/openapi.yaml`
@@ -182,9 +182,6 @@ describes all four as of 14 Sep.
 - **The private-profile path is measured but not exercised end to end.** The empty
   `{"response":{}}` shape is confirmed against a real private profile; the 409 it
   produces has not been seen by the app.
-- **The Xbox bridge number needs re-measuring before it is quoted again.** 63.3% was
-  produced by a script with the 15 Sep paging bug in it (§16), so its denominators are
-  wrong. `npm run lab:xbox-bridge`, then update §4a of the research doc.
 - **The wishlist is NOT missing from `openapi.yaml`** — an earlier note here said it
   was. That file documents edge functions only, by design; the wishlist is a
   PostgREST table and is named in the "does not cover the whole backend" paragraph
@@ -1316,6 +1313,7 @@ copy, because a copied paging loop is how this comes back.
   catalog**. The ratio may survive — the sample is arbitrary rather than biased — but
   both denominators in that table are wrong, and the catalog has grown since. The loop
   is fixed; **re-run `npm run lab:xbox-bridge` before quoting 63.3% again.**
+  **RE-RUN 15 Sep: 62.9% rated / 55.6% floor — the ratio held, as expected.**
 
 **The general lesson, and it is the second instance in two days:** a paged read whose
 page boundary is a *count* rather than a *value* is only correct if the order is
