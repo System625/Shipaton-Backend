@@ -1,13 +1,15 @@
-// GET /games/:id                    ->  CatalogGame
+// GET /games/:id                    ->  CatalogGame          (and records the view)
 // GET /games/popular                ->  CatalogGame[]
 // GET /games/popular-with-friends   ->  (CatalogGame & { friendCount })[]
+// GET /games/recently-viewed        ->  (CatalogGame & { viewedAt })[]
 //
 // Deployed as `games`, so the real paths are /functions/v1/games/<uuid>,
-// /functions/v1/games/popular and /functions/v1/games/popular-with-friends. Supabase
-// routes an edge function by its FIRST path segment, so all three live in this one
-// function -- a separate `popular` function would have to answer on
-// /functions/v1/popular, which is not where a /games collection belongs. Neither
-// literal segment is a valid uuid, so they cannot collide with an id.
+// /functions/v1/games/popular, /functions/v1/games/popular-with-friends and
+// /functions/v1/games/recently-viewed. Supabase routes an edge function by its FIRST
+// path segment, so all four live in this one function -- a separate `popular`
+// function would have to answer on /functions/v1/popular, which is not where a
+// /games collection belongs. No literal segment is a valid uuid, so they cannot
+// collide with an id.
 
 import { authenticate, errorResponse, json, corsHeaders } from "../_shared/http.ts";
 import { toCatalogGame, type CatalogRow } from "../_shared/catalog-game.ts";
@@ -65,6 +67,24 @@ Deno.serve(async (req) => {
     })));
   }
 
+  // The rail behind /games/:id's side effect below. Same twelve columns as the other
+  // two list routes so the app renders all three through one component; `viewedAt` is
+  // additive, exactly like `friendCount`.
+  if (segment === "recently-viewed") {
+    const limit = intParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
+    const offset = intParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+
+    const { data, error } = await auth.supabase
+      .rpc("shelf_recently_viewed", { max_results: limit, p_offset: offset })
+      .returns<(CatalogRow & { viewed_at: string })[]>();
+
+    if (error) return errorResponse(error.message, 500);
+    return json((data ?? []).map((row) => ({
+      ...toCatalogGame(row),
+      viewedAt: row.viewed_at,
+    })));
+  }
+
   if (segment === "popular") {
     const limit = intParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = intParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
@@ -101,6 +121,40 @@ Deno.serve(async (req) => {
     ...nested,
     platforms: (nested.game_platforms ?? []).map((gp) => gp.platforms).filter(Boolean),
   };
+
+  // Recording the view happens HERE rather than in the app, because fetching a game
+  // to render its detail screen IS the view. One call, nothing for the client to
+  // remember, and no way for "what the app shows" and "what the server recorded" to
+  // drift -- the failure mode that the wishlist, the library and colorKey all hit in
+  // their own way.
+  //
+  // Two properties this must have. It must never fail the read -- a game that renders
+  // is worth more than a history row, so an error is logged and swallowed. And the
+  // user must not wait on it: this is the game detail screen, and nobody should watch
+  // a spinner for a rail they did not ask for.
+  //
+  // `?track=0` opts out. The app needs it for anything that fetches a game WITHOUT a
+  // person looking at one -- re-hydrating a library list, prefetching the next card.
+  // Without the escape hatch the rail fills up with games nobody opened, which is
+  // indistinguishable from a bug and impossible to fix from the app's side.
+  if (url.searchParams.get("track") !== "0") {
+    const write = auth.supabase
+      .rpc("shelf_track_game_view", { p_game_id: segment })
+      .then(({ error: trackError }) => {
+        if (trackError) console.error(`recently_viewed write failed: ${trackError.message}`);
+      });
+
+    // `EdgeRuntime.waitUntil` keeps the instance alive until the promise settles
+    // without the response waiting on it -- Supabase's documented way to run work
+    // outside the request handler ("Background Tasks"). Deliberately NOT awaited.
+    // The fallback matters: the global is absent under some local runtimes, and a
+    // floating promise there would be a write that silently never lands.
+    const runtime = (globalThis as {
+      EdgeRuntime?: { waitUntil(promise: Promise<unknown>): void };
+    }).EdgeRuntime;
+    if (runtime) runtime.waitUntil(write);
+    else await write;
+  }
 
   return json(toCatalogGame(row));
 });
