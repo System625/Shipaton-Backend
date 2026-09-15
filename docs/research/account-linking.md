@@ -855,15 +855,28 @@ real, shipped export rather than assuming one:
 for a reason the original framing missed: `giantbomb_id`.** IGDB's own
 `external_game_sources` (section 1 of this doc) lists **source 3 as GiantBomb** —
 the same mechanism that makes Steam (source 1) and Android (source 15) direct
-joins. Nobody has measured what fraction of the catalog carries a GiantBomb id, the
-same shape of question the Xbox bridge answered in §4a
-(`select count(*) from external_games where external_game_source = 3`, joined
-against the catalog). **Measure that before writing any import code** — if it is
-high, Grouvee's export becomes a second Steam-shaped direct join instead of routing
-every row through `shelf_match_title()`; if it is low, the fuzzy matcher on the
-`name` column is still a clean build against real (not scraped) data. Either way it
-is a smaller job than "four platforms in an afternoon" implied, and still worth
-doing.
+joins.
+
+**MEASURED 15 Sep 2026, same shape as the Xbox bridge in §4a:**
+`scripts/link-lab/giantbomb-bridge.ts` (`npx tsx scripts/link-lab/giantbomb-bridge.ts`).
+
+| denominator | carries a GiantBomb id |
+|---|---|
+| all 91,806 catalog games | 13,353 = 14.5% (the floor — most of the long tail has no GiantBomb page) |
+| the 17,106 with ≥ 5 ratings (the closer proxy for a tracked library) | **12,980 = 75.9%** |
+
+**This clears Josh's own 70% threshold — the one Xbox's 62.9% did not.** Unlike
+Xbox, a Grouvee import should be built **id-first**: resolve by `giantbomb_id`
+where the export carries one (three in four rows of anything someone actually
+tracks), fall back to `shelf_match_title()` (97.0% rank-1) only for the rest. Not a
+precision layer over the matcher — the matcher is the fallback here, the reverse of
+the Xbox call.
+
+Build order: still behind Android (2), Xbox (4) and PlayStation (5) in priority,
+since it is a new import source rather than a platform Sola's onboarding flow
+already expects — but it is now the **cheapest of the five to build**, since the
+join is direct and the export is already structured data, no OAuth or delegated
+auth flow to build at all. Worth slotting in wherever the calendar has room.
 
 ---
 
