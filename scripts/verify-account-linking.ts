@@ -45,14 +45,23 @@ async function main() {
   check("the parent hop actually produced edges", (hopCount ?? 0) > 0,
     "without these an import loses ~10 points of a real library");
 
-  // Two Steam appids that collapse onto ONE catalog game are what defect 8b is
-  // about. Find a real pair rather than inventing one.
+  // UPDATED 15 Sep 2026: Skyrim + Skyrim Special Edition used to be the real pair
+  // that collapses onto one catalog game via the parent hop, and this check
+  // asserted that. The 15 Sep catalog widening (6508442, "admit re-releases")
+  // gave Special Edition its OWN catalog row (igdb_id 19457, distinct from base
+  // Skyrim's 472) — confirmed live. shelf_resolve_external_ids now correctly
+  // prefers 489830's DIRECT edge to that row over its PARENT-HOP edge to base
+  // Skyrim (its documented "direct beats hop" order, e.g. via_parent asc). Collapsing
+  // them would now be the bug: a user's Special Edition hours would silently vanish
+  // into the base game's row. This checks the new, correct behaviour instead.
   const { data: collisions } = await admin.rpc("shelf_resolve_external_ids", {
     p_source: "steam", p_uids: ["72850", "489830"],  // Skyrim, Skyrim Special Edition
   });
   const skyrim = (collisions ?? []) as { uid: string; game_id: string; via_parent: boolean }[];
-  const collapsed = skyrim.length === 2 && skyrim[0].game_id === skyrim[1].game_id;
-  check("Skyrim + Skyrim Special Edition collapse onto one catalog game", collapsed,
+  const base = skyrim.find((r) => r.uid === "72850");
+  const se = skyrim.find((r) => r.uid === "489830");
+  check("Skyrim Special Edition resolves to its own catalog row, not the base game's",
+    !!se && !se.via_parent && se.game_id !== base?.game_id,
     skyrim.map((r) => `${r.uid}->${r.game_id.slice(0, 8)}${r.via_parent ? " (hop)" : ""}`).join(" "));
 
   // ---- 1. The clamp (defect 8a) ----
@@ -390,8 +399,14 @@ async function main() {
     check("the parent hop contributed", res.viaParent > 0, `${res.viaParent} via parent`);
     check("it fits inside an edge function's budget", elapsed < 150_000, `${(elapsed / 1000).toFixed(1)}s`);
 
+    // g1 (section 4) and g2 (section 5a, reclaimed by the defect-8d fix) also carry
+    // source_kind='steam' on this same account, and are unrelated to this import --
+    // excluded, or a synthetic fixture would inflate a count this check exists to
+    // pin exactly.
     const { count: written } = await alice.client.from("library_entries")
-      .select("*", { count: "exact", head: true }).eq("source_kind", "steam");
+      .select("*", { count: "exact", head: true })
+      .eq("source_kind", "steam")
+      .not("game_id", "in", `(${g1.id},${g2.id})`);
     check("the rows are really in the library", (written ?? 0) === res.inserted,
       `${written} rows`);
     const { data: longest } = await alice.client.from("library_entries")
