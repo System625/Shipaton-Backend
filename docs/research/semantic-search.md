@@ -280,6 +280,20 @@ all present, which looks stranger than the whole series being absent.
 `total_rating_count >= 5`. Deliberately *not* type 2 (Expansion), which needs its
 base game to make sense, nor Bundle or DLC.
 
+> **SHIPPED 15 Sep 2026.** See §8 step 1 for what actually landed. Two corrections to
+> what follows. **The admitted count held exactly** -- 2,043 rows against the 2,042
+> measured here, and 510 colliding titles against the 510 measured here. **But this
+> section's model of editions was wrong:** it assumed an edition is always
+> `game_type = 0` plus a `version_parent`, so the widened pass could not admit one.
+> 23 of the 2,043 carry a `version_parent` -- IGDB types "Deus Ex: Game of the Year
+> Edition" as Expanded Game and "Bulletstorm: Full Clip Edition" as Remaster, not as
+> type 0. They were kept: several are the canonical version people play, they carry
+> suffixed titles so they never collide on exact match, none exceeds 100 ratings, and
+> excluding them would have moved the pass off the number this decision was measured
+> on. `npm run verify:seed-widening` pins that set at <= 50 rows, none >= 150 ratings,
+> so a future re-typing of something major fails loudly instead of appearing in the
+> catalog.
+
 Measured against IGDB on 11 Sep:
 
 | | |
@@ -467,13 +481,29 @@ a beat later — the fast path already exists and costs nothing to keep.
 Nineteen days to 30 Sep. Ordered so each step ships something demonstrable and
 nothing is wasted if the next step is cut.
 
-1. **Widen the seed** (§5). Half a day. Unblocks everything and fixes normal search
-   too. Without it the demo hits RE2 1998 and looks broken.
-2. **Store the descriptive fields we already fetch and throw away.** `keywords` and
-   `game_modes` are pulled from IGDB today, used to derive `session_fit`, then
-   discarded; `summary`, `storyline`, `themes` and `player_perspectives` are not
-   requested at all. Add the columns, re-seed. Half a day, and everything downstream
-   needs it.
+1. ~~**Widen the seed** (§5).~~ **DONE 15 Sep.** Greenlit by Josh the same day and
+   shipped as pass 3 of `scripts/seed-games.ts` (`seedRereleasePageQuery`), proved
+   against live IGDB by `npm run verify:seed-widening` before the re-seed ran, then
+   re-seeded from zero. **The catalog went 89,123 -> 91,806**, pass 3 contributing
+   exactly the 2,043 rows §5 predicted. `Resident Evil 2` is now two rows (1998 and
+   2019), and `Persona 5 Royal`, `The Last of Us Part I`, `Mario Kart 8 Deluxe` and
+   `Dark Souls: Remastered` are in the catalog for the first time. Share matching was
+   re-measured after the re-seed and did not move: 19/21 confident, the same two
+   misses.
+
+   **One thing §5 understated.** The duplicate titles are not all pairs: there are
+   **five** rows titled `Resident Evil` and four titled `Resident Evil 4`. The 21-link
+   share measurement now returns four candidates reading exactly `Resident Evil` for
+   one link, which is unpickable if the confirm screen renders a bare title. The
+   ranking still puts the right one first and every candidate already carries
+   `releaseDate` and cover art, so this is a display fix in the app -- written up in
+   `technical-notes-for-sola.md` §11 -- but it is a real consequence and it was not
+   predicted here.
+2. ~~**Store the descriptive fields we already fetch and throw away.**~~ **DONE
+   15 Sep**, and it needed no code: `mapping.ts` had written all five columns since
+   11 Sep, and the only reason they were null on all 89,123 rows was that no seed had
+   run from zero since. The re-seed above did it. **`summary` is now on 89,202 of
+   91,806 rows, `themes` on 62,921, `keywords` on 49,399** -- all three were 0.
 3. **LLM-names-the-game, grounded through `shelf_search_games`.** One edge function,
    no new infrastructure, no embeddings, no enrichment. **This alone will answer both
    of Josh's example queries.** One to two days, and it is the demo.

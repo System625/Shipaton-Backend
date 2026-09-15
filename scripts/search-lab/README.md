@@ -84,9 +84,50 @@ The `vibe` column drifting up while `reddit` stays flat is the self-authored-eva
 bias showing itself in real time — Steam tags match the vocabulary I used when
 writing those queries, and nobody else's.
 
+## Measured 15 Sep 2026 — LLM names the game (step 3), on DeepSeek
+
+Josh sent a DeepSeek key instead of an Anthropic one. This is step 3 of
+`docs/research/semantic-search.md` §8 measured **without** catalog grounding —
+raw model knowledge, `reddit-eval.tsv`, exact-ish title match, @1 only. Grounding
+through `shelf_search_games` is still to build; it should raise precision and
+allow rejecting hallucinated titles.
+
+| Config | reddit @1 | out tokens/query | wall/query |
+|---|---:|---:|---:|
+| lexical FTS baseline (11 Sep) | **0%** | — | ~0 |
+| `deepseek-flash`, thinking OFF | **7.8%** | 2 | 0.2s |
+| `deepseek-flash`, `reasoning_effort=minimal` | **40.3%** | 3,748 | ~23s |
+| `deepseek-flash`, thinking ON, uncapped | **42.9%** | 5,574 | ~29s |
+
+**0% → 43% is the whole result.** The method was the problem, exactly as §3 said.
+
+Three things that must travel with these numbers:
+
+1. **The reasoning is the capability.** With `thinking: {type:"disabled"}` the model
+   answers `UNKNOWN` on 69 of 77. The cheap fast path is worthless here; you are
+   buying the reasoning or you are buying nothing.
+2. **Latency is the real constraint, not accuracy.** ~23-30s per query at 6-way
+   concurrency. §7 of the research doc assumed "a second of latency is acceptable
+   if the UI admits it" — that assumption does not survive contact. The instant
+   trigram path underneath is now load-bearing, and the vague answer has to arrive
+   asynchronously rather than "a beat later."
+3. **A small `max_tokens` silently returns an empty string**, `finish_reason:
+   "length"`, no error. A first run scored 27.3% purely from truncation at 900
+   tokens; at 8,000 tokens 22/77 were still truncated. Budget ~24k, and treat
+   empty content as a retry, not as "no answer".
+
+Measured cost: **$0.71 for ~300 queries** (balance $36.98 → $36.27), so roughly
+**0.7 cents per vague search** at uncapped reasoning.
+
+`reddit-eval.tsv` is a hard lower bound (see the caveat above) — Shelf's real case
+skews recent and popular, so the shipped feature should beat 43%.
+
 ## Still to run
 
-Needs a Voyage API key (free tier covers it) and an Anthropic key:
+Needs a Voyage API key (free tier covers it). **DeepSeek cannot substitute** —
+it has no embeddings endpoint (`/embeddings` returns 404, checked 15 Sep 2026).
+The Anthropic-key items below are now covered by DeepSeek; the embedding items
+are not:
 
 1. Generate enrichment for the corpus with Claude (Batch API).
 2. Embed it with `voyage-4-lite`, `halfvec(512)`, HNSW.

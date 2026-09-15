@@ -513,6 +513,16 @@ The rated subset is the fairer proxy — an import only ever sees games somebody
 actually played, and played libraries are popularity-weighted — so **63.3% is the
 number to quote and 55.5% is the floor.**
 
+> **CAVEAT ADDED 15 Sep: these four numbers rest on a broken denominator.** The script
+> that built them, `link-lab/xbox-title-bridge.ts`, paged the catalog with an
+> unordered `.range()` and therefore saw an arbitrary ~two thirds of the eligible
+> rows, differing run to run (§10, prerequisite). The *ratio* may well survive — the
+> sample is arbitrary rather than biased toward or against having a Microsoft id —
+> but "7,223 Xbox catalog games" and "4,301 with ≥ 5 ratings" are both wrong, and the
+> catalog has since grown to 91,806 rows besides. The paging is fixed. **Re-run
+> `npm run lab:xbox-bridge` before quoting 63.3% again**, and treat every figure in
+> this table as unconfirmed until then.
+
 **Verdict: between Josh's two thresholds, so neither of his conclusions fires.**
 63.3% is below the 70% that would justify building id-first and above the 50% that
 would send us back to name matching alone. The decision that follows is not either
@@ -763,6 +773,23 @@ IGDB calls on the user's critical path. **BUILT 14 Sep** —
 `20260914100000_game_external_ids.sql` and `scripts/seed-external-ids.ts`
 (`npm run seed:external-ids`), which also seeds `microsoft` and `android` because
 they come out of the same IGDB pull.
+
+   **RE-SEEDED 15 Sep, and the first two runs were wrong in a way nothing reported.**
+   `catalogByIgdbId()` paged the catalog with `.range(from, from + 999)` and no
+   `.order()`. Postgres promises no row order without an ORDER BY, so the OFFSET
+   windows skipped rows and repeated others: the seed read **~60,000 of 91,806**
+   games, a *different* ~60,000 each run (measured: 59,879, then 59,212, then 91,806
+   once keyset paged). It never errored and its summary looked healthy, so roughly a
+   third of the catalog silently had no store ids written and every import quietly
+   fell back to name matching for those games. Fixed to keyset paging on `igdb_id`,
+   the same thing `pullSource()` already did against IGDB, and pinned by
+   `npm run verify:external-id-paging`, which asserts the read returns every eligible
+   row and returns the same set twice running.
+
+   **`scripts/link-lab/xbox-title-bridge.ts` had the identical loop**, so the **63.3%
+   bridge figure in §4a was measured over about two thirds of the eligible catalog**.
+   The loop is fixed; the number has not been re-measured and should be before anyone
+   builds on it.
 
 1. **Steam** — OpenID edge function, `GetOwnedGames`, direct join, parent hop.
    **BUILT 14 Sep** — four functions (`steam-link-start`, `steam-link-callback`,

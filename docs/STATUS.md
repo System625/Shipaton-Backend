@@ -1,6 +1,6 @@
 # Shelf backend — where things stand
 
-**Last updated 14 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 15 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
 
 **The app is called Prysm.** Settled 14 Sep. "Shelf" survives as the internal name
@@ -14,17 +14,20 @@ the vendor's own documentation on 4 Sep, so don't redo that research.
 
 ## The one-paragraph version
 
-**The Supabase half is done and verified against the real project.** All ten
-migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer matches the spec's
-worked example exactly, search and roulette were exercised against seeded rows, and
-RLS was confirmed to isolate two real accounts — read *and* write.
+**The Supabase half is done and verified against the real project.** All
+**thirty-six** migrations are applied to `sbunhrxwhraigwpidbxk`, the normalizer
+matches the spec's worked example exactly, search and roulette were exercised
+against seeded rows, and RLS was confirmed to isolate two real accounts — read
+*and* write.
 
 **The Twitch blocker is gone and the catalog is seeded.** 7 Sep: a Twitch account
 created abroad (Nigerian numbers are still rejected by Twitch's 2FA — the workaround
-was the account, not the phone) produced real IGDB credentials, and the catalog now
-holds **89,117 games, 62,685 alternative titles and 161,738 platform links**. All
-twelve abbreviation and hashtag cases resolve in the top 5 against real data.
-`/search` on real data works.
+was the account, not the phone) produced real IGDB credentials. Re-seeded from zero
+on 15 Sep to admit re-releases, the catalog now holds **91,806 games, 65,908
+alternative titles and 168,723 platform links**, and carries the descriptive text
+vague search needs — `summary` on 89,202 rows, where all five of those columns were
+null as recently as that morning. All twelve abbreviation and hashtag cases resolve
+in the top 5 against real data. `/search` on real data works.
 
 **Every planned endpoint is now deployed and verified against a real JWT.**
 `/search` and `/games/:id` on 7 Sep, `/games/popular` and `/roulette` on 8 Sep, and
@@ -32,9 +35,18 @@ twelve abbreviation and hashtag cases resolve in the top 5 against real data.
 commands re-check the lot: `npm run verify:functions`, `verify:roulette`,
 `verify:share`. Share matching has since been measured against 21 real gaming
 TikTok links (`npm run measure:share`), which found and fixed two more defects —
-one of them a confidently wrong match. **The backend build is done, and the free-tier decision
+one of them a confidently wrong match, and re-measured after the 15 Sep re-seed with
+no movement (19/21 confident). **The backend build is done, and the free-tier decision
 landed 14 Sep — paywall after the import result, imported rows count against the
 50-game limit (`docs/research/account-linking.md` §11). What is left is app-side.**
+
+**15 Sep shipped four more things and found a silent data bug.** Account deletion and
+friend discovery (Sola's punch list), recently-viewed, and the catalog widening that
+unblocks vague search — all live and verified. The bug is the one worth reading:
+`seed-external-ids.ts` had been seeding store ids from **an arbitrary two thirds of
+the catalog, differently every run**, because it paged with an unordered `.range()`.
+See "The paging bug" below; the class of mistake is the same one that nearly shipped
+a 56%-complete Steam import on 14 Sep.
 
 ---
 
@@ -130,6 +142,12 @@ is: build it as a **precision layer over** the name matcher (97.0% rank-1), not 
 replacement, and **Xbox does not move ahead of Android** in the build order. Research
 doc §4a.
 
+**Treat 63.3% as unconfirmed until it is re-measured.** The script that produced it
+carried the paging bug in §16, so it measured an arbitrary ~two thirds of the eligible
+catalog. The *decision* above probably survives — a ratio over an arbitrary sample, and
+55.5%–63.3% would have to move a long way to cross either threshold — but the numbers
+do not. Re-run `npm run lab:xbox-bridge` now that the loop is fixed.
+
 All four functions are deployed — `steam-link-callback` with `verify_jwt = false`,
 which it must have, since Steam's redirect cannot carry a JWT. `docs/openapi.yaml`
 describes all four as of 14 Sep.
@@ -164,6 +182,9 @@ describes all four as of 14 Sep.
 - **The private-profile path is measured but not exercised end to end.** The empty
   `{"response":{}}` shape is confirmed against a real private profile; the 409 it
   produces has not been seen by the app.
+- **The Xbox bridge number needs re-measuring before it is quoted again.** 63.3% was
+  produced by a script with the 15 Sep paging bug in it (§16), so its denominators are
+  wrong. `npm run lab:xbox-bridge`, then update §4a of the research doc.
 - **The wishlist is NOT missing from `openapi.yaml`** — an earlier note here said it
   was. That file documents edge functions only, by design; the wishlist is a
   PostgREST table and is named in the "does not cover the whole backend" paragraph
@@ -175,7 +196,14 @@ describes all four as of 14 Sep.
   workaround for `/roulette`, an endpoint that already existed, because he was reading
   a pinned old version.
 - **Xbox, Android and PlayStation are not built.** Steps 3–5 of the research doc's
-  build order.
+  build order. The **CSV importer** (Backloggd / GG / Grouvee / Minimap) is still
+  unscheduled and the research doc still calls it the cheapest win in the area — zero
+  credentials, zero ToS exposure, an afternoon.
+- **The 50-game free-tier cap has no server-side enforcement**, and never had. The
+  only mentions of it in `supabase/` are two comments saying the *app* counts
+  (`20260911221650_wishlist.sql`, `steam-import/index.ts`). Pricing was settled
+  14 Sep; whether the server enforces the cap was never decided, and an app-only limit
+  is one reinstall away from not existing.
 
 ---
 
@@ -1081,7 +1109,7 @@ does take ids, but a foreign id and a nonexistent id both return `0`, so it is n
 oracle — asserted directly in section 6 of the verifier. The three trigger functions live
 in `private` and the advisor does not see them at all.
 
-### 12. Vague search — **researched 11 Sep. Not built. Two things needed from Tunde.**
+### 12. Vague search — **steps 1 and 2 DONE 15 Sep. Step 3 is next and is unblocked.**
 
 The feature Josh asked for in `docs/decisions-for-josh.md`: *"Feudal Japan, guy with a
 metal arm, really hard"* → Sekiro. **Full write-up in
@@ -1110,12 +1138,16 @@ Do not spend time on synonyms, stemming or `ts_rank` weights.
 higher than the 77 real ones, because whoever writes the queries reuses catalog
 vocabulary without noticing. Report numbers from `reddit-eval.tsv`.
 
-**Prepared and typechecked, not applied.** Order matters and getting it wrong breaks
-the live catalog: **migration first, then re-seed, then deploy the functions.** The
-mapper now writes five columns that do not exist yet, so deploying the functions
-before `db push` makes every `/search` live-IGDB fallback and every `/share-confirm`
-write fail on an unknown column — silently, from the app's side. Re-seed from zero,
-not resumed: resume is for interruptions, not code changes (§4).
+**DONE 15 Sep. The migration had in fact been applied on 11 Sep** — this section said
+"prepared, not applied" for four days while the columns existed and sat null on every
+row, because no seed had run from zero since. The 15 Sep re-seed filled them:
+`summary` on 89,202 of 91,806 rows, `themes` on 62,921, `keywords` on 49,399. The
+ordering advice below still holds for any future column change — **migration first,
+then re-seed, then deploy the functions** — because the mapper writing a column the
+database does not have fails every `/search` live-IGDB fallback and every
+`/share-confirm` write, silently, from the app's side. And re-seed from zero, not
+resumed: resume is for interruptions, not code changes (§4). That distinction is
+exactly what cost four days here.
 
 ```sh
 !npx supabase db push
@@ -1132,7 +1164,9 @@ What is prepared:
 - `igdb.ts` `GAME_FIELDS` and `mapping.ts` updated to match. `npm run
   verify:descriptive` proves the round trip against live IGDB on three real games.
 
-**Decision waiting on Josh/Tunde: widen the seed's `game_type` filter.** Measured:
+**~~Decision waiting on Josh/Tunde:~~ widen the seed's `game_type` filter — GREENLIT
+AND SHIPPED 15 Sep**, see "The catalog widening" below. What follows is the measurement
+that made the case, and it held exactly. Measured:
 **2,042 games with ≥5 ratings are excluded** because `game_type = 0 & parent_game =
 null` also removes remakes, remasters, ports and expanded editions. The catalog's
 `Resident Evil 2` is the **1998 original**, not the 2019 remake with 2.4× the
@@ -1143,9 +1177,152 @@ while all its sequels are present. The cost is **510 exact duplicate titles**. S
 the research doc §5 — the ranking already breaks those ties correctly, with no code
 change.
 
-**Blocked on two API keys**, both cheap or free: **Voyage AI** (200M free
-tokens/month, enough to embed the whole catalog several times over) and **Anthropic**
-with Batch API. Without them the fix can only be predicted, not measured.
+**Was blocked on two API keys. One arrived, and it is not the one we asked for.**
+Josh sent a **DeepSeek** key on 15 Sep in place of the Anthropic one, and it covers
+the half he greenlit: step 3 needs an LLM and nothing else. Measured the same day
+against `reddit-eval.tsv`, the 77 real r/tipofmyjoystick queries the lexical build
+scored **0%** on: **`deepseek-flash` with thinking on scores 42.9%**, ungrounded, at
+~0.7 cents and **20-30 seconds** per query. Three things travel with that number —
+the reasoning *is* the capability (thinking off: 7.8%), the latency breaks §7's "a
+second is acceptable" assumption so the vague answer has to arrive asynchronously,
+and a small `max_tokens` returns an empty string with no error.
+
+**Voyage is still not sent and DeepSeek cannot substitute** — it has no embeddings
+endpoint, `/embeddings` 404s, checked 15 Sep. Step 5 stays blocked. Voyage is free
+and the signup is five minutes, so this is an ask to repeat, not a cost to argue.
+Full detail in `docs/decisions-for-josh.md` and `scripts/search-lab/README.md`.
+
+---
+
+### 13. Sola's 15 Sep punch list — **13 items. 3 were already live, 3 shipped, the rest are his.**
+
+He sent a list on 15 Sep. Three of them already existed and he had not seen them
+(the pinned API-reference problem again, see below). Three were real backend gaps:
+
+- **Account deletion — SHIPPED 15 Sep.** `supabase/functions/account-delete`,
+  `npm run verify:account-delete`. Required by Apple guideline 5.1.1(v) before any
+  submission, so this was a release blocker, not a nicety. It deletes the `auth.users`
+  row and lets the **seventeen** ON DELETE CASCADE foreign keys do the rest — which
+  also removes the rows *other people* own that point at the deleted account, their
+  follows and notifications and blocks, none of which an RPC under RLS could have
+  seen. **Storage is the exception** and is the reason the function has a body:
+  `storage.objects` has no FK to `auth.users`, and `post-images` is a public bucket,
+  so an orphaned object stays fetchable by URL forever.
+- **Friend discovery — SHIPPED 15 Sep.** `20260915120000_friend_discovery.sql`,
+  `npm run verify:friend-discovery`. The social graph had been complete since 8 Sep
+  except for the one thing that makes it usable: nothing returned the *members* of a
+  follow list and nothing searched profiles, so an account could only follow a handle
+  it already knew exactly. Three functions, one row shape. Prefix search, not fuzzy —
+  a people search is someone typing a handle they were told, and trigram matching
+  there surfaces strangers with similar names, which is both a worse answer and a
+  mild privacy smell.
+- **Recently viewed — SHIPPED 15 Sep.** See §14.
+
+Everything else on the list is app-side.
+
+### 14. Recently viewed — **DONE 15 Sep.** `npm run verify:recently-viewed`, 21 checks.
+
+`20260915140000_recently_viewed.sql` and a new route on the `games` function:
+`GET /games/recently-viewed` returns the same `CatalogGame` objects as everything
+else, newest first, plus `viewedAt`.
+
+**The app does not record views — `/games/:id` does, on the way out.** Fetching a
+game to render its detail screen *is* the view, so there is nothing for the client to
+call, batch or remember, and no way for what the app shows and what the server
+recorded to drift apart. That drift is this project's most repeated bug: `colorKey`,
+the wishlist and the library each hit their own version of it. The write runs through
+`EdgeRuntime.waitUntil` so the user never waits on it, and a failure is logged and
+swallowed — a game that renders is worth more than a history row.
+
+**The one thing the app owes: `?track=0`** on any fetch where nobody is looking at a
+game — re-hydrating a library list, prefetching. Without it the rail fills with games
+nobody opened, which looks like a backend bug and cannot be fixed from the backend,
+because the server cannot tell a prefetch from a person.
+
+Re-opening a game moves it rather than adding a row; the history is capped at 50 per
+user, trimmed inside the write. **It is private and stays private** — owner-only,
+never in the feed, never aggregated into popular-with-friends, not counted against the
+50-game free tier. Browsing history is more revealing than a library, because it
+includes everything someone looked at and did not add, so it sits on the strict side
+of the line the social-graph migration drew.
+
+**It is already in use.** Sola's account had 13 rows within hours of the deploy.
+
+### 15. The catalog widening — **DONE 15 Sep**, and it is the prerequisite for vague search.
+
+Greenlit by Josh the same morning. A third seed pass (`seedRereleasePageQuery`),
+admitting IGDB types 4, 8, 9, 10 and 11 — Standalone Expansion, Remake, Remaster,
+Expanded Game, Port — at >= 5 ratings. Passes 1 and 2 could not see any of them,
+because they filter `parent_game = null` and **every re-release has a parent**.
+
+| | before | after |
+|---|---:|---:|
+| games | 89,123 | **91,806** |
+| alternative titles | 62,685 | 65,908 |
+| platform links | 161,738 | 168,723 |
+| rows with `summary` | 0 | 89,202 |
+
+`Resident Evil 2` is now two rows, 1998 and 2019. `Persona 5 Royal`, `The Last of Us
+Part I`, `Mario Kart 8 Deluxe` and `Dark Souls: Remastered` are in the catalog for the
+first time. Share matching was re-measured afterwards and did not move: 19/21
+confident, the same two misses.
+
+**`npm run verify:seed-widening` ran before the re-seed, not after**, which is the
+only reason a three-hour job was not spent on an unverified query. It caught a real
+error: the assumption that an edition is always `game_type = 0` plus a `version_parent`
+is false — IGDB types "Deus Ex: Game of the Year Edition" as Expanded Game. 23 such
+rows are admitted, all under 100 ratings, and they are **kept on purpose** (several
+are the version people actually play). The check now pins that set rather than
+asserting zero.
+
+**The consequence to know about: duplicate titles are not all pairs.** Five rows are
+titled `Resident Evil`, four `Resident Evil 4`, three `GoldenEye 007`; 510 titles
+collide in total. The share measurement now offers four candidates reading exactly
+`Resident Evil` for one link — unpickable if the confirm screen renders a bare title.
+The ranking still puts the right one first, and every candidate already carries
+`releaseDate` and cover art, so this is a display fix in the app. Written up for Sola
+in `technical-notes-for-sola.md` §11.
+
+### 16. The paging bug — **found 15 Sep. Fixed. Read this one.**
+
+`seed-external-ids.ts` read the catalog with `.range(from, from + 999)` and **no
+`.order()`**. Postgres promises no row order without an ORDER BY, so successive OFFSET
+windows skip rows and repeat others. Measured against 91,806 eligible rows:
+
+```
+true count:        91806
+offset paging, #1: 59879
+offset paging, #2: 59212     <- same data, same code, minutes apart
+keyset paging:     91806
+```
+
+**So every run seeded store ids for an arbitrary ~65% of the catalog, a different 65%
+each time, and reported success.** No error, no warning, and a summary full of
+plausible percentages — which were themselves computed against the partial map. Every
+Steam, Xbox and Android import silently lost its direct-join path for the missing
+third and fell back to name matching.
+
+Fixed to keyset paging on `igdb_id` — the same technique `pullSource()` in the same
+file already used against IGDB, with the reason stated in its own comment.
+`npm run verify:external-id-paging` now asserts the read returns every eligible row
+*and* returns the same set twice running; it imports the real function rather than a
+copy, because a copied paging loop is how this comes back.
+
+**Two things it contaminated.**
+
+- `game_external_ids` is now re-seeded correctly: 90,335 rows covering 67,806 games.
+- **`link-lab/xbox-title-bridge.ts` had the identical loop**, so the **63.3% Xbox
+  bridge figure from 14 Sep was measured over about two thirds of the eligible
+  catalog**. The ratio may survive — the sample is arbitrary rather than biased — but
+  both denominators in that table are wrong, and the catalog has grown since. The loop
+  is fixed; **re-run `npm run lab:xbox-bridge` before quoting 63.3% again.**
+
+**The general lesson, and it is the second instance in two days:** a paged read whose
+page boundary is a *count* rather than a *value* is only correct if the order is
+pinned. The 14 Sep case was PostgREST truncating a `returns setof` at 1,000 rows with
+no error (Trap below). Both were silent, both produced plausible numbers, and neither
+was visible from the outside. Assume any loop of this shape is wrong until a check
+proves otherwise.
 
 ---
 
@@ -1153,6 +1330,13 @@ with Batch API. Without them the fix can only be predicted, not measured.
 
 These are the ones that cost time if you hit them without warning.
 
+- **A paged read without a pinned order is silently partial.** `.range(from, from+999)`
+  with no `.order()` re-runs an unordered query per page, so rows are skipped and
+  repeated: the external-id seed read ~65% of the catalog, a different 65% each run,
+  and said "done." Page on a *value* you ordered by, never on a count. §16.
+- **`returns setof` + PostgREST truncates at 1,000 rows with no error.** The same
+  shape of failure one day earlier, and it nearly shipped a 56%-complete Steam
+  import. Return `jsonb` from an RPC that can exceed 1,000 rows.
 - **The seed is a script, not an edge function.** Free-plan functions cap at 2s CPU
   and 150s wall clock; a bulk load blows through both.
 - **Filter `game_type = 0`.** Without it, "Elden Ring" returns the base game, Shadow
@@ -1282,9 +1466,11 @@ These are the ones that cost time if you hit them without warning.
   Deep-link redirect URLs are needed either way, and the Expo cost is already sunk
   since Expo Go went for `expo-share-intent`.
 
-- **`CoverColorKey`** in `_shared/catalog-game.ts` is a placeholder set of seven
-  names. Confirm the real union against Sola's app and replace it, or the coloured
-  swatch fallback renders wrong.
+- ~~**`CoverColorKey`** is a placeholder set of seven names.~~ **CLOSED — it was
+  confirmed against the app on 7 Sep** and this entry was simply never struck. The
+  file now carries the real ten-key union, `src/data/catalog.ts` is named as the
+  source, and the placeholder-era bug (five of seven keys silently rendering the same
+  grey) is written up in the comment. Nothing to do.
 - **pg_trgm thresholds** (0.55 confident, 0.30 plausible) are a starting point, not a
   result. Tune against real queries. First real data point: `witcher 3` scores 0.45
   against "The Witcher 3: Wild Hunt" — a very common way to type it, landing in
@@ -1320,7 +1506,9 @@ search doc**, not a shelf filter — so it filters the catalog and it is backend
 
 Migrations `20260914130000_platform_family_fix.sql` and
 `20260914130100_search_filters_and_sort.sql`, plus the `/search` edge function.
-Verified by `npm run verify:search-filters`. **Not yet pushed or deployed.**
+Verified by `npm run verify:search-filters`. **Applied and deployed** — this line
+said "not yet pushed or deployed" until 15 Sep, when the live project was checked
+and both migrations were already in `supabase_migrations` with `search` on version 3.
 
 **A latent bug turned up under the Device Type pill and is fixed here.**
 `platforms.family` was derived from a slug regex in `seed-platforms.ts`, whose own

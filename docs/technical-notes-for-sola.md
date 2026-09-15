@@ -35,6 +35,7 @@ Everything on the backend is live and verified. What's left is app wiring.
 | **Wishlist ("Saved")** | **PostgREST: `wishlist_entries`** | **New today, not wired. Section 2** |
 | Roulette | `GET /roulette?platform=&hours=&size=` | No screen yet. Section 3 |
 | Popular with friends | `GET /games/popular-with-friends` | Not wired. Section 3 |
+| **Recently viewed** | **`GET /games/recently-viewed`** | **New today, not wired. Section 11** |
 | Friends feed | PostgREST tables + `shelf_feed`, `shelf_profile_stats` | `FRIEND_POSTS` mock. Section 4 |
 | Notification inbox | `shelf_notifications` and two more RPCs | Bell has no `onPress`. Section 4 |
 | Share a link | `POST /share-resolve`, `POST /share-confirm` | Not wired, no `expo-share-intent` yet. Section 5 |
@@ -664,3 +665,93 @@ the window is respected exactly and nothing is capped.
 
 **`sort=best_match` is the default and is byte-identical to today's behaviour.**
 An unfiltered, unsorted `/search?q=` call returns exactly what it returned before.
+
+---
+
+## 11. New today: recently viewed, and a bigger catalog
+
+Two things landed on 15 Sep. The first is the last backend item from your punch
+list; the second changes what `/search` finds, with no app work at all.
+
+### Recently viewed — one new route, and you do not write to it
+
+```
+GET /functions/v1/games/recently-viewed?limit=20&offset=0
+```
+
+Returns **the same `CatalogGame` objects as `/search` and `/games/popular`**, newest
+first, plus one extra field:
+
+```jsonc
+[
+  {
+    "id": "…", "title": "Hades II", "platforms": [...], "coverImageUrl": "…",
+    "abbreviation": "H2", "colorKey": "purple",   // …the usual CatalogGame
+    "viewedAt": "2026-09-15T14:02:11.318Z"        // …and this
+  }
+]
+```
+
+So the rail renders through the component you already have. `viewedAt` is additive,
+exactly like `friendCount` on popular-with-friends.
+
+**You do not record views. I do.** Opening `GET /games/<uuid>` *is* the view — the
+server writes the history row on the way out. There is nothing to call, nothing to
+batch, nothing to remember on a cold start, and no way for what the app shows and
+what the server recorded to drift apart. That drift is the bug that has bitten this
+project three times now (colorKey, the wishlist, the library).
+
+**The one thing I need you to do: pass `?track=0` when you fetch a game and nobody is
+looking at it.** Re-hydrating a library list, prefetching the next card, warming a
+cache — anything that is not a person opening a detail screen:
+
+```ts
+const game = await api(`/games/${id}?track=0`);   // does not touch the history
+```
+
+Get this wrong and the rail slowly fills with games nobody opened. From your side
+that looks like a backend bug, and it is unfixable from mine, because the server
+cannot tell a prefetch from a person.
+
+Three more properties worth knowing:
+
+- **Re-opening a game moves it to the top, it does not add a second row.** No
+  de-duplication needed in the app.
+- **It is capped at 50 per user**, oldest dropped. Ask for more than 50 and you get
+  50.
+- **It is private, and it stays private.** Owner-only, never in the feed, never
+  aggregated into popular-with-friends, not counted against the 50-game free tier.
+  Browsing history is more revealing than a library — it includes everything someone
+  looked at and did not add — so it sits on the strict side of the line the social
+  graph drew, not the library's side. Account deletion takes it with everything else.
+
+### The catalog now holds re-releases
+
+The seed used to admit only "main games", which quietly excluded every remake,
+remaster, port and expanded edition. Concretely: our `Resident Evil 2` was the
+**1998 original**, `Resident Evil 4` was **2005**, `Mario Kart 8` was the **Wii U**
+one, and `Persona 5 Royal`, `The Last of Us Part I` and `Dark Souls: Remastered` were
+absent entirely. ~2,043 rows are being added.
+
+**Nothing changes on your side, but one thing will look different, and it needs a UI
+decision from you.** Some searches now return several rows with the *same title*. This
+is intended — they are genuinely different games — but it is sharper than "two rows":
+
+| title | rows in the catalog | span |
+|---|---:|---|
+| `Resident Evil` | **5** | 1996 → 2024 |
+| `Resident Evil 4` | 4 | 2005 → 2023 |
+| `GoldenEye 007` | 3 | 1997 → 2023 |
+| `Resident Evil 2` | 2 | 1998 → 2019 |
+
+510 titles collide this way. **Where it bites hardest is the share confirm screen.**
+Measured on 15 Sep against the 21 real TikTok links: one of them now offers four
+candidates all reading exactly `Resident Evil`, which is an unpickable list if the row
+shows only a title. The ranking still puts the most popular one first and the overall
+hit rate did not move (19/21 confident, unchanged), so the *default* is right — the
+problem is only visible when the user goes to choose.
+
+**Everything you need to tell them apart is already in the payload and always was.**
+Every candidate is a full `CatalogGame`: `releaseDate`, `coverImageUrl`, `platforms`.
+Showing the year next to the title on the confirm screen and in search results is
+enough. Nothing is needed from me for this.
