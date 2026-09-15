@@ -21,15 +21,26 @@ verify_jwt = true
 verify_jwt = true
 [functions.steam-link-start]
 verify_jwt = true
-# The ONLY unauthenticated endpoint in this backend, and it has to be: Steam
-# redirects the user's browser here after sign-in, with no Authorization header and
-# no way to add one. It is safe because it trusts nothing in the request — the
-# identity is confirmed by an OpenID check_authentication round trip to Steam, and
-# the single-use nonce in the query string is what names the user. Deploy it with
-# `--no-verify-jwt`; this line only covers `supabase functions serve`.
+# The two unauthenticated endpoints in this backend, and they have to be: Steam and
+# xbl.io redirect the user's browser here after sign-in, with no Authorization
+# header and no way to add one. Both are safe because they trust nothing in the
+# request — Steam's identity is confirmed by an OpenID check_authentication round
+# trip, Xbox's by claimXboxCode()'s round trip to xbl.io/app/claim, and in both
+# cases a single-use nonce in the query string is what names the user (Xbox's is
+# UNVERIFIED whether it survives the redirect at all — see _shared/xbox.ts).
+# Deploy both with `--no-verify-jwt`; these lines only cover `supabase functions
+# serve`.
 [functions.steam-link-callback]
 verify_jwt = false
 [functions.steam-link-finish]
 verify_jwt = true
 [functions.steam-import]
+verify_jwt = true
+[functions.xbox-link-start]
+verify_jwt = true
+[functions.xbox-link-callback]
+verify_jwt = false
+[functions.xbox-link-finish]
+verify_jwt = true
+[functions.xbox-import]
 verify_jwt = true

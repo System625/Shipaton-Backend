@@ -214,10 +214,25 @@ fallback — the reverse of the Xbox call. Research doc §10.
   moved since it last cost real work — on 8 Sep Sola built a 15-query client-side
   workaround for `/roulette`, an endpoint that already existed, because he was reading
   a pinned old version.
-- **Xbox, Android and PlayStation are not built.** Steps 3–5 of the research doc's
-  build order. The **CSV importer** (Backloggd / GG / Grouvee / Minimap) is still
-  unscheduled and the research doc still calls it the cheapest win in the area — zero
-  credentials, zero ToS exposure, an afternoon.
+- **Xbox is built but NOT TRUSTED — needs a human.** Four functions
+  (`xbox-link-start/callback/finish`, `xbox-import`), the DisplayCatalog bridge
+  written into `game_external_ids` (4,765 `xbox_title` edges), and a two-stage
+  resolve (bridge, then `shelf_search_games` ≥ 0.55) in `importXboxLibrary`. Three
+  things are unverified and flagged in `supabase/functions/_shared/xbox.ts`:
+  whether the linking flow's `state` param survives xbl.io's redirect at all (the
+  whole correlation mechanism the flow depends on — Steam's OpenID happens to
+  provide this natively and OpenXBL's simplified entry point shows no equivalent
+  in any source reachable so far), the response shape of `titleHistory`/`account`,
+  and playtime hours (not built — every row writes `hours: 0`). This is exactly
+  where Steam's OpenID handshake stood before Sola drove it for real on 14 Sep;
+  someone needs to do the same for Xbox before it ships. Research doc §4.
+  **Needs a migration push + four function deploys** — see the handover note below.
+- **Android and PlayStation are not built.** Steps 3 and 5 of the research doc's
+  build order.
+- **The CSV importer is scoped but not built.** Researched down to Grouvee only
+  (Backloggd and GG have no export; Minimap shows no evidence of one) and measured
+  at 75.9% via `giantbomb_id` — clears the id-first threshold, cheapest of the
+  five import sources to build (no OAuth at all). See the section above.
 - **The 50-game free-tier cap has no server-side enforcement**, and never had. The
   only mentions of it in `supabase/` are two comments saying the *app* counts
   (`20260911221650_wishlist.sql`, `steam-import/index.ts`). Pricing was settled

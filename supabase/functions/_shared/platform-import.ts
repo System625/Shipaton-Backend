@@ -1,8 +1,13 @@
 // The platform-agnostic half of an import: clamp, resolve, write, report.
 //
-// Steam is the only caller today. Xbox will be the second and will hand this the
-// same shape — a list of {uid, hours} — which is the reason it is a separate file
-// rather than living inside steam-import.
+// Steam and Xbox are the two callers. `importToLibrary` below is the Steam shape
+// — one source resolves and writes under the same name. Xbox needs a second
+// function, `importXboxLibrary`, because its resolution is two-stage: a
+// deterministic id bridge first (game_external_ids source 'xbox_title', DIFFERENT
+// from the 'xbox' write source — see 20260915170000_xbox_title_source.sql), then
+// shelf_search_games as a name-match fallback for the ~37-44% the bridge misses
+// (docs/research/account-linking.md §4a measured 62.9%/55.6%). Both still land in
+// the same shelf_import_library call, one write, source_kind='xbox' either way.
 
 // Structurally typed rather than importing SupabaseClient from jsr:, for the same
 // reason igdb.ts has no imports at all: this file is also read by the Node
@@ -99,5 +104,96 @@ export async function importToLibrary(
     // Capped: the app shows a count, not a list, and a 4,000-game library with a
     // 12% miss rate would otherwise put 500 ids in a response nobody reads.
     unmatched: items.filter((i) => !byUid.has(i.uid)).slice(0, 50).map((i) => i.uid),
+  };
+}
+
+export type XboxTitleItem = { titleId: string; name: string };
+
+export type XboxImportResult = ImportResult & {
+  // Of `matched`, how many came from each path — the number Josh's 70%/50%
+  // thresholds were about, now visible per real import rather than only in the
+  // lab measurement.
+  viaTitleId: number;
+  viaNameMatch: number;
+};
+
+// The confidence floor `shelf_search_games` callers use everywhere else in this
+// backend — see the comment on shelf_catalog_row.score. Not a new number invented
+// for Xbox.
+const NAME_MATCH_CONFIDENT = 0.55;
+
+/**
+ * Xbox's two-stage resolve. `shelf_resolve_external_ids('xbox_title', ...)` first
+ * — deterministic, cannot mis-match — then `shelf_search_games` for whatever it
+ * misses. Both feed the SAME shelf_import_library call, so a title-id match and a
+ * name match are indistinguishable in the library afterward; only this function's
+ * return value tells them apart, for STATUS/reporting rather than for the write.
+ *
+ * HOURS ARE NOT WIRED UP. OpenXBL exposes playtime only via a separate
+ * `POST /api/v2/player/stats` call (MinutesPlayed per titleId), which is a third
+ * unverified response shape on top of the two already flagged in _shared/xbox.ts
+ * — not built this session. Every row this writes carries `hours: 0`, which reads
+ * as "played zero hours" rather than "hours unknown". Flagged here rather than
+ * silently shipped: the app should not display hours for xbox-sourced rows until
+ * this is built, the same way it must not call Steam's `total` a library size.
+ */
+export async function importXboxLibrary(
+  supabase: RpcClient,
+  titles: XboxTitleItem[],
+): Promise<XboxImportResult> {
+  if (titles.length === 0) {
+    return { total: 0, matched: 0, inserted: 0, updated: 0, viaParent: 0, unmatched: [], viaTitleId: 0, viaNameMatch: 0 };
+  }
+
+  const { data: resolved, error } = await supabase.rpc("shelf_resolve_external_ids", {
+    p_source: "xbox_title",
+    p_uids: titles.map((t) => t.titleId),
+  });
+  if (error) throw new Error(`resolve failed: ${error.message}`);
+
+  const bridged = (resolved ?? []) as { uid: string; game_id: string; via_parent: boolean }[];
+  const byTitleId = new Map(bridged.map((r) => [r.uid, r]));
+
+  const items: { game_id: string; uid: string; hours: number }[] = [];
+  const unmatched: string[] = [];
+  let viaNameMatch = 0;
+
+  for (const t of titles) {
+    const hit = byTitleId.get(t.titleId);
+    if (hit) {
+      items.push({ game_id: hit.game_id, uid: t.titleId, hours: 0 });
+      continue;
+    }
+    // The fallback: one shelf_search_games call per unresolved title. This is the
+    // same per-item cost share ingestion already pays for a TikTok/YouTube link,
+    // not a new shape — see docs/research/account-linking.md §4a for why this is
+    // the right call now that the bridge clears 62.9%, not 100%.
+    const { data: hits } = await supabase.rpc("shelf_search_games", { q: t.name, max_results: 1 });
+    const top = ((hits ?? []) as { id: string; score: number }[])[0];
+    if (top && top.score >= NAME_MATCH_CONFIDENT) {
+      items.push({ game_id: top.id, uid: t.titleId, hours: 0 });
+      viaNameMatch++;
+    } else {
+      unmatched.push(t.titleId);
+    }
+  }
+
+  const { data: counts, error: importError } = await supabase.rpc("shelf_import_library", {
+    p_source: "xbox",
+    p_items: items,
+  });
+  if (importError) throw new Error(`import failed: ${importError.message}`);
+
+  const first = ((counts ?? []) as { inserted: number; updated: number }[])[0];
+
+  return {
+    total: titles.length,
+    matched: items.length,
+    inserted: first?.inserted ?? 0,
+    updated: first?.updated ?? 0,
+    viaParent: bridged.filter((r) => r.via_parent).length,
+    viaTitleId: items.length - viaNameMatch,
+    viaNameMatch,
+    unmatched: unmatched.slice(0, 50),
   };
 }

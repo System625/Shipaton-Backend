@@ -454,16 +454,52 @@ discovered by every tester.
 There is no public official Xbox Live API; Microsoft gates it behind a partner
 agreement. Everyone routes through **OpenXBL** (`xbl.io`).
 
-**Auth is better than it looks.** Beyond the personal key (which only reads your own
-account), OpenXBL has a real delegated flow: send the user to
-`https://xbl.io/app/auth/{YourPublicKey}`, they sign in at Microsoft, we get a `code`
-on our redirect URL, and we claim it within a few minutes for *their* key. Requests
-made with a consumer key must carry the static header `X-Contract: 100`. So the
-credential is the user's, not ours — the right shape.
+**Auth is better than it looks, and CORRECTED 15 Sep 2026 on one point.** Beyond
+the personal key (which only reads your own account), OpenXBL has a real delegated
+flow: send the user to `https://xbl.io/app/auth/{YourPublicKey}`, they sign in at
+Microsoft, we get a `code` on our redirect URL, and we claim it.
 
-**Endpoints:** `GET /api/v2/player/titleHistory` for played titles,
-`GET /api/v2/achievements/player/{xuid}` for achievements,
-`GET /api/v2/account` for the profile. Auth header is `x-authorization`.
+**"we claim it... for *their* key" was wrong — there is no per-user key.**
+Checked against OpenXBL's own published source (`OpenXBL/OpenXBL-PHP`'s
+`Auth.php`, `Client.php`, `HttpService.php`, and the OpenAPI spec in
+`OpenXBL/Docs`, both on GitHub) rather than assumed. `claim(code)` returns
+identity only — `{xuid, gamertag, email, avatar}` — nothing that functions as a
+credential. Every delegated call afterward, on any user's behalf, uses **our own
+single app key** (the same `OPENXBL_API_KEY` already received) with the static
+header `X-Contract: 100` and the target's `xuid` in the URL path (e.g.
+`/api/v2/player/titleHistory/{xuid}`), confirmed against the real endpoint list in
+the OpenAPI spec. So the credential is ours, not the user's — the opposite of what
+this section used to say, though the practical shape (never touch a Microsoft
+password, section 9 rule 1) is unaffected.
+
+**UNRESOLVED, found while building 15 Sep: how the callback knows which Shelf user
+this is for.** Steam's OpenID carries a nonce through `openid.return_to`, which
+Steam echoes back — that is the entire mechanism `steam-link-callback` relies on.
+Nothing in OpenXBL's delegated-auth entry URL, per every source reachable
+(the interactive docs site itself returned a Cloudflare bot-block from here),
+supports a state/correlation parameter. `xbox-link-start`/`xbox-link-callback`
+were built anyway, appending `?state=<nonce>` on a bet that it survives the
+redirect, and failing closed if it does not — see
+`supabase/functions/_shared/xbox.ts`, "UNVERIFIED #1". **This needs a human to
+complete the real flow once**, the same way Sola's 14 Sep run was what actually
+confirmed Steam's handshake, before any of the Xbox linking endpoints are trusted.
+
+**Endpoints:** `GET /api/v2/player/titleHistory/{xuid}` for played titles,
+`GET /api/v2/achievements/player/{xuid}` for achievements (not built — out of
+scope, see the rate-limit note below),
+`GET /api/v2/account/{xuid}` for the profile. Auth header is `x-authorization`.
+**The exact response shape of titleHistory and account is ALSO unverified** — the
+OpenAPI spec documents the endpoints and their `{xuid}` path param but not a
+response schema for either. `_shared/xbox.ts` uses Microsoft's well-established
+real Xbox Live titlehub shape (`titles[].titleId`, `titles[].name`) as the best
+available guess and fails loudly rather than silently if fewer than half a
+response's entries parse — see "UNVERIFIED #2" in that file.
+
+**Playtime hours are not wired up at all.** Nothing found so far exposes hours
+directly on titleHistory; the only lead is `POST /api/v2/player/stats` with
+`stats: [{name: 'MinutesPlayed', titleId}]`, a THIRD unverified response shape not
+built this session. `xbox-import` writes every row with `hours: 0` for now — the
+app must not display hours for xbox-sourced rows until this is built.
 
 **Rate limit is the real constraint.** The free tier is **150 requests/hour**; paid
 starts at $5/month for 500/hour, and 429 on overage. Title history is one request,
@@ -829,9 +865,22 @@ they come out of the same IGDB pull.
 3. **Android package detection** — direct join, and it is a genuine Android-exclusive
    feature and a Galaxy Store argument.
 4. **Xbox** — OpenXBL delegated auth, title history, **the DisplayCatalog title-id
-   bridge for the 62.9% it reaches (section 4a), name matching for the rest.** A
-   day. Import-only: we are on the free 150 req/hour tier and that ceiling is
-   app-wide.
+   bridge for the 62.9% it reaches (section 4a), name matching for the rest.**
+   Import-only: we are on the free 150 req/hour tier and that ceiling is app-wide.
+
+   **BUILT (best-effort) 15 Sep — NOT YET TRUSTED.** Four functions
+   (`xbox-link-start/callback/finish`, `xbox-import`) mirroring the Steam
+   shape, `game_external_ids` seeded with the real bridge output (`source =
+   'xbox_title'`, 4,765 edges), and `importXboxLibrary` in `_shared/platform-import.ts`
+   layering `shelf_search_games` (confidence ≥ 0.55, the same floor used everywhere
+   else) over the bridge for the rest. **Three things are unverified and need a
+   human before this ships** — all detailed in `_shared/xbox.ts`: whether the
+   callback's `state` param survives xbl.io's redirect at all (the entire
+   correlation mechanism the linking flow depends on), the exact response shape of
+   `titleHistory` and `account`, and playtime hours (not built — every row writes
+   `hours: 0`). This is the same status Steam's OpenID handshake had before Sola
+   drove it for real on 14 Sep — do not read a deploy of these functions as "Xbox
+   linking works."
 5. **PlayStation** — tokens-not-NPSSO, name matching, behind an advanced disclosure.
    Only if 1–4 are done.
 
