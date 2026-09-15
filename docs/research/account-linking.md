@@ -839,9 +839,31 @@ they come out of the same IGDB pull.
 not justify the day, though the IDs join cleanly if that changes).
 
 **Worth flagging as the cheapest win in the whole area, and it is not a platform at
-all:** a CSV importer for Backloggd / GG / Grouvee / Minimap. Zero credentials, zero
-ToS exposure, zero platform risk, an afternoon of work, and it targets users who are
-already annoyed at an app that has not shipped a feature since 2023.
+all:** a CSV importer. This originally named four candidates — Backloggd, GG,
+Grouvee, Minimap — on the assumption that trackers like these export their data.
+**RESEARCHED 15 Sep 2026, and the assumption was half wrong.** Checked each for a
+real, shipped export rather than assuming one:
+
+| service | export? | source |
+|---|---|---|
+| Backloggd | **No.** CSV export is an open roadmap item (7.1k votes), not shipped. Community scrapers exist and parse the public profile HTML instead, producing only `Title, Rating` — no id, every row through the fuzzy matcher, and scraping HTML is the ToS-adjacent path the "zero ToS exposure" line assumed away. | [backloggd.com/roadmap](https://backloggd.com/roadmap/) |
+| GG (ggapp.io) | **No.** "Import & export your library as csv" and "Steam Integration" are both open feature requests. | [ggapp.nolt.io/145](https://ggapp.nolt.io/145) |
+| Grouvee | **Yes, real and shipped.** Settings → "Export your collection to a CSV file", login-gated. Columns confirmed against working parser code (not just a forum post): `name`, `giantbomb_id`, `dates`, `statuses`, `rating`, `platforms`, `grouvee_id`, `url`, `shelves`, `release_date`, `genres`, `franchises`, `developers`, `publishers`. | [Grouvee forum](https://discuss.grouvee.com/t/export-to-csv-and-add-column/205), [working parser](https://gist.github.com/connorshea/2ff7c8e4471266189d15f9501a61bc08) |
+| Minimap | **No evidence of one.** Its own pitch is syncing Steam/PlayStation/Xbox/Switch via credentials — it is a competitor solving the platform-linking problem a different way, not a data source. | — |
+
+**So this is a Grouvee importer, not a four-service one, and it is worth building
+for a reason the original framing missed: `giantbomb_id`.** IGDB's own
+`external_game_sources` (section 1 of this doc) lists **source 3 as GiantBomb** —
+the same mechanism that makes Steam (source 1) and Android (source 15) direct
+joins. Nobody has measured what fraction of the catalog carries a GiantBomb id, the
+same shape of question the Xbox bridge answered in §4a
+(`select count(*) from external_games where external_game_source = 3`, joined
+against the catalog). **Measure that before writing any import code** — if it is
+high, Grouvee's export becomes a second Steam-shaped direct join instead of routing
+every row through `shelf_match_title()`; if it is low, the fuzzy matcher on the
+`name` column is still a clean build against real (not scraped) data. Either way it
+is a smaller job than "four platforms in an afternoon" implied, and still worth
+doing.
 
 ---
 
