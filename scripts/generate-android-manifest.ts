@@ -57,14 +57,30 @@ export async function androidManifestPackages(count: number): Promise<{ uid: str
   return [...seen.entries()].slice(0, count).map(([uid, title]) => ({ uid, title }));
 }
 
+// A title is printed inside an XML comment, and XML comments may not contain "--"
+// or end in "-" — a single title like "Sword -- Sworcery" would make the whole file
+// unparseable, which is exactly how docs/android-manifest-packages.xml shipped broken
+// once: a "--" in its hand-written header meant browsers and every XML reader refused
+// the file. Nothing downstream re-escapes this, so it has to be right here.
+function commentSafe(title: string): string {
+  return title.replace(/-{2,}/g, "-").replace(/-+$/, "").trim();
+}
+
 async function main() {
   const count = Number(process.argv[2] ?? 500);
   const rows = await androidManifestPackages(count);
 
-  console.log(`-- ${rows.length} package names, by total_rating_count desc --\n`);
-  for (const r of rows) console.log(`    <package android:name="${r.uid}" /> <!-- ${r.title} -->`);
+  // Emitted as a complete, valid <queries> document rather than bare <package> lines:
+  // it is handed to Sola as a file, so it has to parse on its own to be readable in a
+  // browser. AndroidManifest.xml declares xmlns:android on its own <manifest> root, so
+  // the declaration here is only what makes this file standalone.
+  console.log(`<?xml version="1.0" encoding="utf-8"?>`);
+  console.log(`<!-- ${rows.length} package names, by total_rating_count desc -->`);
+  console.log(`<queries xmlns:android="http://schemas.android.com/apk/res/android">`);
+  for (const r of rows) console.log(`    <package android:name="${r.uid}" /> <!-- ${commentSafe(r.title)} -->`);
+  console.log(`</queries>`);
 
-  console.log(`\n-- same list, as JSON, for the app's own resolve step --\n`);
+  console.log(`\n<!-- same list, as JSON, for the app's own resolve step -->\n`);
   console.log(JSON.stringify(rows.map((r) => r.uid)));
 }
 
