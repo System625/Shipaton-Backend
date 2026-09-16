@@ -22,6 +22,53 @@ everyone means and Mario Kart 8 Deluxe.
 
 ---
 
+## 0. WHAT CHANGED — read this before anything below (16 Sep 2026)
+
+This document was written on 11 Sep and its §6-§9 architecture was a **prediction**.
+On 16 Sep the whole pipeline was built and measured. Two of its central claims did
+not survive, so read this section before trusting any recommendation further down.
+
+**1. "What works is embeddings over LLM-written descriptions" — measured, and it is
+the LLM's world knowledge doing essentially all of the work, not the embeddings.**
+On the 71 scorable `reddit-eval.tsv` queries, with the full 17k corpus embedded:
+
+| Path | @1 | @5 |
+|---|---:|---:|
+| lexical baseline (11 Sep) | 0% | 2% |
+| vector only, raw query | **0.0%** | **4.2%** |
+| HyDE (model writes a description, embed that) | 22.5% | 29.6% |
+| **LLM names the game + catalog grounding** | **42.3%** | **49.3%** |
+| fusion (both, merged) | 42.3% | **50.7%** |
+
+Per query: the model returned **no title on 0 of 71** — it always guesses, so there
+is no "I don't know" gap for vectors to fill — and **HyDE rescued exactly 1 query
+the model got wrong**. The entire embedding stack is worth **+1.4 points**.
+**§8 step 5 and §8 step 6 are therefore not worth building as specified**, and §9's
+"expect 70-85%" for embeddings+HyDE was optimistic by roughly 20 points.
+
+Caveat that must travel with that: the embedded corpus is raw IGDB text, **not** the
+LLM-written enrichment §6 assumed. Enrichment remains unmeasured. What is known is
+that §3 already showed enrichment moved the *lexical* number by nothing, and the gap
+left to close is 1.4 points, not 30.
+
+**2. §7's "this removes cost as a design constraint entirely" was right about price
+and never checked rate limits.** See the rewritten §7 below. The short version: an
+API key without a payment method on its organisation is throttled to 3 requests per
+minute, which is not a product, and the way out is Supabase's in-runtime `gte-small`
+which needs no key at all.
+
+**3. Latency is far worse than §7's table.** Measured over 71 queries at 6-way
+concurrency: **median 25.7s, p90 68.8s, max 227.5s**. The maximum **exceeds the 150s
+edge-function wall clock**, so the endpoint cannot be synchronous at all — this is a
+correctness constraint now, not a UX preference. And because raw-query vector search
+scores 0%, there is no fast semantic path to put underneath it; the instant layer can
+only be the existing trigram search.
+
+Full numbers, method and the two bugs found along the way:
+`scripts/search-lab/README.md`.
+
+---
+
 ## 1. The headline measurements
 
 A corpus of **7,250 games** (every IGDB game with ≥20 user ratings, all game types)
@@ -416,15 +463,44 @@ pricing and docs on 11 Sep 2026:
 | `rerank-3-lite` | $0.02 / 1M tokens, 200M free/month |
 | batch API | additional 33% discount |
 
-**Embedding the entire catalog is free.** 89,123 games at ~400 tokens of enrichment
-each is ~36M tokens — 18% of one month's free allowance. Re-embedding after a prompt
-change is also free. This removes cost as a design constraint entirely, which is
-worth knowing before anyone optimises for it.
+**Embedding the entire catalog is free on price — but the free tier is rate limited
+into uselessness, and that was not checked when this was written.** Corrected
+16 Sep 2026, measured against the live API:
+
+A Voyage key whose organisation has **no payment method** is throttled to **3
+requests/minute and 10,000 tokens/minute**. The fourth request inside a minute
+returns HTTP 429 with a billing message. The 200M free tokens still apply — a card
+lifts the throttle rather than starting a bill.
+
+| | throttled (no card) | with a card |
+|---|---|---|
+| embed the 17k-game corpus, one-off | ~6.5 hours | ~4 minutes |
+| **embed each user's query, forever** | **3 searches/min, app-wide** | fine |
+
+The second row is fatal: three searches per minute across all users is not a
+product, and judging on 22 Oct would break it in the first minute.
+
+**The way out needs no key and no card.** Supabase Edge Functions ship an embedding
+model *inside the runtime* — `new Supabase.ai.Session('gte-small')` — with no
+external call, no key, no per-minute cap. The same weights (`Supabase/gte-small`)
+run locally through Transformers.js, so lab numbers transfer to production directly.
+Measured: **550-580 docs/min locally**, the whole 17,106-row corpus in ~30 minutes,
+free, and re-embedding after a change is also free.
+
+It costs 384 dimensions against voyage-4-lite's 512, English only, and a 512-token
+input window — of which only **378 of 17,106 docs (2.2%)** exceed the window at all.
+
+Given §0, none of this is on the critical path any more: embeddings buy 1.4 points.
+It is recorded because it is the answer if embeddings are ever revisited.
 
 ### Storage — the real constraint
 
-The Supabase project is on the free tier: **108 MB used of 500 MB**, so ~390 MB
-headroom. `vector` 0.8.2 is available and not yet installed (`pg_cron`, `pg_net` and
+The Supabase project is on the free tier. **This figure is stale: it was 108 MB on
+11 Sep and is 288 MB on 16 Sep**, after the catalog widening to 91,806 rows, the
+descriptive columns being filled, and the lab's own corpus tables. Headroom is
+~210 MB, not ~390 MB — re-measure before sizing anything against it. Measured
+16 Sep: a `halfvec(512)` row is **exactly 1,032 bytes**, so the full catalog is
+90 MB of vectors before any index. `vector` 0.8.2 is available and not yet installed (`pg_cron`, `pg_net` and
 `pgmq` are available too, which is the standard Supabase pipeline for keeping
 embeddings current).
 
@@ -469,10 +545,16 @@ Supabase edge functions allow **150 s wall clock** on free and **2 s CPU**, wher
 excludes time awaiting I/O — so a function that makes two external calls and a
 database query is comfortably inside the limits. Memory is 256 MB.
 
-A second of latency is acceptable here *if the UI admits it*. This is a "help me
-remember" interaction, not a typeahead. Run the existing instant trigram search
-underneath and show its results immediately, with the vague-search results arriving
-a beat later — the fast path already exists and costs nothing to keep.
+**The table above is wrong and the paragraph that followed it has been deleted.**
+Measured 16 Sep over 71 real queries at 6-way concurrency: **median 25.7s, p90
+68.8s, max 227.5s** — not 0.8-1.5s. The maximum exceeds the **150s edge-function
+wall clock**, so a synchronous endpoint is not merely bad UX, it is a function
+timeout. The vague answer must be delivered asynchronously.
+
+The advice to run the instant trigram search underneath still stands and is now
+load-bearing rather than a nicety. Note that it cannot be a *semantic* fast path:
+raw-query vector search scores 0% @1 (§0), so the instant layer is the existing
+trigram search or nothing.
 
 ---
 
@@ -504,17 +586,32 @@ nothing is wasted if the next step is cut.
    11 Sep, and the only reason they were null on all 89,123 rows was that no seed had
    run from zero since. The re-seed above did it. **`summary` is now on 89,202 of
    91,806 rows, `themes` on 62,921, `keywords` on 49,399** -- all three were 0.
-3. **LLM-names-the-game, grounded through `shelf_search_games`.** One edge function,
-   no new infrastructure, no embeddings, no enrichment. **This alone will answer both
-   of Josh's example queries.** One to two days, and it is the demo.
+3. ~~**LLM-names-the-game, grounded through `shelf_search_games`.**~~ **MEASURED
+   16 Sep: 42.3% @1, 49.3% @5**, up from a 0% lexical baseline. It does indeed answer
+   both of Josh's example queries — "Feudal Japan, guy with a metal arm, really hard"
+   returns `Sekiro: Shadows Die Twice` at 0.98 confidence. **The retrieval half is
+   done and proven; what is left is the edge function that wraps it.** Grounding goes
+   through `shelf_ground_titles`, NOT `shelf_search_games` — see §11.
 4. **Steam tag backfill** for the 7,635 mapped games. Two hours of polling, one
-   afternoon of code.
-5. **Enrichment + embeddings + HyDE.** The real recall engine, and where the long
-   tail gets found. Three to four days.
-6. **Reranker.** Half a day, measurable quality jump.
+   afternoon of code. **Unaffected by any of the above, and still optional** — Steam
+   tags moved the lexical number by nothing (§3), and nothing since suggests they
+   would move this one.
+5. ~~**Enrichment + embeddings + HyDE.** The real recall engine.~~ **MEASURED AND
+   NOT WORTH BUILDING.** It is not the real recall engine; the model's world
+   knowledge is. Full corpus embedded, all paths scored: embeddings add **1.4
+   points** over the LLM alone, rescuing **1 query in 71**. Three to four days of
+   work, a second model on both sides of the query, ~90 MB of vectors and an HNSW
+   index, for one query. **Do not build this without a new reason.** The lab corpus
+   and both embedding columns are kept so the decision can be re-checked, not
+   re-argued — `scripts/search-lab/README.md`.
+6. ~~**Reranker.**~~ **Moot.** It reorders a candidate list that embeddings barely
+   contribute to. It is also unavailable for free: `rerank-3-lite` carries the same
+   3 RPM throttle as Voyage's embeddings, and Supabase's runtime offers no reranker.
 
-If the deadline bites, **steps 1–3 are a shippable feature** and a good demo. Steps
-5–6 are what make it hold up under judging when someone types something obscure.
+**Revised: steps 1-3 are the feature, not a fallback.** The 11 Sep framing — "if the
+deadline bites, 1-3 are shippable; 5-6 are what make it hold up under judging" — is
+inverted by the measurement. Steps 1-3 *are* what holds up; 5-6 are the part that
+would have been cut for nothing.
 
 ---
 
@@ -651,3 +748,161 @@ and the name is never cropped because the name is a separate layer.
 catalog from IGDB, plus landscape art and a transparent wordmark for roughly half of
 the popular ones from Steam. A genuine square crop with a legible name, for
 everything, does not exist in any free source and would have to be produced.
+
+---
+
+## 11. Where this stopped, and exactly how to finish it (16 Sep 2026)
+
+**Stopped because the DeepSeek account ran out of credit mid-session**, not because
+anything is unsolved. `GET https://api.deepseek.com/user/balance` returns
+`is_available: false`, `total_balance: "-0.02"`, and every completion call 402s with
+"Insufficient Balance". The LLM naming step is the feature, so nothing further can be
+measured or demoed until there is balance.
+
+**This session's spend does not explain it.** ~83 calls were made, which at the
+measured ~5,574 output tokens per query and DeepSeek's *peak* `deepseek-flash` rate
+($1.20/1M output, reasoning billed as output) is **~$0.55**. The 15 Sep session cost
+a measured $0.71. The balance was $36.27 on 15 Sep. So roughly $36 is unaccounted
+for. The balance object reads `granted_balance: "0.00"` with `topped_up_balance:
+"-0.02"`, which is the shape of **promotional credit expiring** rather than $36 of
+inference — but DeepSeek exposes **no usage endpoint** (only `/user/balance`; `/usage`,
+`/v1/usage` and `/dashboard/billing/usage` all 404), so this cannot be settled from
+the API. **Check the DeepSeek dashboard's usage page before topping up**, in case the
+credit expired and a top-up would be spent the same way.
+
+`scripts/search-lab/deepseek.ts` now tracks `spend` (calls, tokens, USD at peak
+rates) on every call including failed ones, and `run-vague-eval.ts` checks the
+balance *before* a run rather than discovering the problem 60 queries in.
+
+### What is already done and needs no repeating
+
+- The corpus, `search_vec_lab`, 17,106 rows, **fully embedded** with `gte-small`.
+- All four retrieval paths scored — the table in §0.
+- **71 DeepSeek understandings are cached on disk** at
+  `scripts/search-lab/cache/understanding.deepseek-flash.json`. Every eval mode
+  replays from that cache with **zero API calls**: `npm run lab:vague -- --mode llm`
+  reproduces 42.3% / 49.3% offline. The cache is gitignored, so it is local-only —
+  do not delete it while the account is empty, it is the only copy.
+- `shelf_ground_titles`, measured and correct.
+- Migration `20260916100000_search_sort_null_safe.sql`, written and **not yet applied**.
+
+### The remaining steps, in order
+
+**1. Settle the DeepSeek balance question** (above), then either top up or switch
+provider. If switching, `understand()` in `scripts/search-lab/deepseek.ts` is the
+only place that talks to the model — it takes `{ model }` and returns
+`{ titles, hyde, confidence }`. A second provider goes behind that one function.
+Re-measure `--mode llm` after any provider change; 42.3% is a `deepseek-flash`
+number and does not transfer.
+
+**2. Apply the migration and confirm the sort fix.** I cannot push; hand over:
+
+```sh
+!npx supabase db push --linked --dry-run   # always, before the real one
+!npx supabase db push --linked
+```
+
+Then confirm the bug is dead — this must return the exact match first, not third:
+
+```sql
+select title, score from shelf_search_games(
+  'Sekiro: Shadows Die Twice', 3, null, null, null, null, null, null);
+```
+
+**3. Promote `shelf_ground_titles` into a real migration.** ~~It currently exists
+only as a scratch function created through `execute_sql`~~ **DONE 16 Sep 2026** —
+`20260916110000_ground_titles.sql`, definition pulled from the live function via
+the Supabase Management API so nothing was retyped from memory, with the standard
+`revoke all ... from public, anon; grant execute ... to authenticated` block.
+**This was a live gap, not just a ledger risk:** the scratch version's `proacl`
+still carries the default PUBLIC grant, confirmed live — `anon` can call it in
+production until this migration is pushed.
+
+**4. Build the edge function.** ~~The design is settled by the measurements~~
+**BUILT 16 Sep 2026**, as `supabase/functions/vague-search` (interactive) +
+`supabase/functions/vague-search-sweep` (does the actual model call), plus
+`20260916120000_vague_search_jobs.sql`. One thing the measurements settled
+differently than expected, so it's worth stating explicitly:
+
+- **Asynchronous, not request/response — and not a single background task either.**
+  p90 is 68.8s and the observed maximum 227.5s **exceeds the 150s function wall
+  clock**, which turns out to rule out `EdgeRuntime.waitUntil` too: that still runs
+  inside the same invocation's lifetime, so a call that can take 227s cannot be
+  awaited by ANY single edge function invocation, foreground or background. The
+  shape that survives that constraint is a job row (`vague_search_jobs`) plus a
+  sweep (`vague-search-sweep`, same shape as `push-sweep`) that bounds its own
+  wall-clock budget across a batch and leaves a job `pending` rather than risk
+  being killed mid-call. `POST /vague-search` never calls the model at all; it only
+  reads the cache, or creates a job and returns `202`.
+- **Instant layer is the existing trigram search.** Not a vector search: raw-query
+  vector scores 0% @1. (`/search` is unchanged; this is additive.)
+- **Ground every title. Never show one the catalog cannot confirm.** One
+  `shelf_ground_titles` call per job, ~1.07s for five titles.
+- **Cache hard, and now actually wired.** `search_cache (query_norm, game_ids,
+  fetched_at)` was, until now, wired to nothing. `shelf_vague_search_cache_get`/
+  `_put` read and write it (30-day freshness — a judgment call, not a measurement:
+  a vague-search answer names a specific game, which does not go stale the way a
+  live catalog lookup would). Note the opposite contract for `/roulette`, which
+  must never be cached.
+- **Return confidence, unthresholded.** The model emits it; 0.98 for Sekiro against
+  0.72 for an ambiguous Mario query is the difference between "it's this one" and
+  "one of these" — but where to draw that line in the UI is step 6, still open.
+
+**Nothing above is deployed.** The migrations need `db push`, the two functions
+need `functions deploy`, and `vague-search-sweep` needs its pg_cron schedule wired
+by hand, the same deliberately-not-in-a-migration way `push-sweep`'s is (that
+function's own comment explains why — it needs the service role key in Vault for
+`pg_net`). None of this can happen without the user; see the repo's own note on
+that.
+
+**Run this once, by hand, via the Supabase SQL editor — after `DEEPSEEK_API_KEY` is
+set as a function secret** (same shape as `docs/research/push-notifications.md`'s
+pg_cron snippet for `push-sweep`):
+
+```sql
+-- pg_cron, pg_net and supabase_vault are already installed on this project
+-- (confirmed by push-sweep's existing schedule).
+select vault.create_secret('<paste the service role key>', 'vague_search_sweep_service_key');
+
+select cron.schedule(
+  'vague-search-sweep',
+  '*/1 * * * *',  -- every minute; each pass bounds its own budget, see the function
+  $$
+  select net.http_post(
+    url := 'https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1/vague-search-sweep',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'vague_search_sweep_service_key'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  ) as request_id;
+  $$
+);
+```
+
+To stop it: `select cron.unschedule('vague-search-sweep');`.
+
+**5. Tell Sola the latency numbers.** Median 25.7s, p90 68.8s, max 227.5s. This
+changes the screen design and it is not a detail he can absorb late.
+
+**6. Decide what "no answer" looks like.** The model returned a title on **71 of 71**
+queries — it never abstains, so roughly half its answers are confidently wrong. The
+grounding step makes them real games, which makes a wrong answer *more* plausible,
+not less. Either use the confidence score as a threshold or show the top few as
+options rather than one verdict. **This is a product decision for Paul and it is not
+yet made.**
+
+### Cleanup, once the decision in §8 step 5 is final
+
+```sql
+drop table if exists search_vec_lab cascade;
+drop function if exists shelf_vec_lab_search(extensions.halfvec, int);
+drop function if exists shelf_vec_lab_search_txt(text, int);
+drop function if exists shelf_vec_lab_search_gte(extensions.vector, int);
+drop function if exists shelf_vec_lab_search_gte_txt(text, int);
+```
+
+That reclaims ~50 MB. **Do not drop it while step 5's verdict could still be
+revisited** — re-embedding is free with `gte-small` but the 17k-row corpus and its
+`doc` text took a working day to assemble. `shelf_ground_titles` is NOT scratch and
+must survive (see step 3).

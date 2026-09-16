@@ -1187,7 +1187,83 @@ does take ids, but a foreign id and a nonexistent id both return `0`, so it is n
 oracle — asserted directly in section 6 of the verifier. The three trigger functions live
 in `private` and the advisor does not see them at all.
 
-### 12. Vague search — **steps 1 and 2 DONE 15 Sep. Step 3 is next and is unblocked.**
+### 12. Vague search — **step 3 MEASURED 16 Sep at 42.3%. Step 5 measured and CANCELLED. Blocked on DeepSeek credit.**
+
+**Read `docs/research/semantic-search.md` §0 and §11 first.** §0 is what the 11 Sep
+architecture got wrong; §11 is exactly where this stopped and how to finish it.
+
+**The headline: 0% -> 42.3% @1, 49.3% @5** on the 77 real r/tipofmyjoystick queries,
+via DeepSeek naming the game with every title grounded against the real catalog, so a
+hallucinated title can never reach a user. Josh's own example works — *"Feudal Japan,
+guy with a metal arm, really hard"* returns `Sekiro: Shadows Die Twice` at 0.98.
+
+**Step 5 (enrichment + embeddings + HyDE) is cancelled, on evidence.** The full 17k
+corpus was embedded and all four retrieval paths scored. Embeddings add **1.4 points**
+over the LLM alone — they rescue **1 query in 71**. Raw-query vector search scores
+**0% @1**. Do not build it without a new reason; the numbers are in
+`scripts/search-lab/README.md`.
+
+**BLOCKED: the DeepSeek account is out of credit** — `is_available: false`,
+balance `-$0.02`. Every call 402s. This session's ~83 calls cost ~$0.55, so ~$36 is
+unaccounted for and the balance shape suggests **expired promotional credit**, not
+spend. **Check the usage dashboard before topping up.** DeepSeek has no usage API.
+
+**Not blocked on Voyage, and Voyage is no longer needed.** Its key works but is
+throttled to **3 requests/minute** without a payment method on the org, which is not
+a production query path. Supabase's in-runtime `gte-small` needs no key at all and
+embedded the corpus free in 30 minutes — but per the above, embeddings are not worth
+shipping anyway.
+
+**Two bugs found by measuring.** `shelf_search_games` with an explicit
+`sort_by => null` collapsed its ranking to the `g.id` tiebreak and returned a
+score-1.0 exact match *third*; `/search` defaults the parameter so production was
+never affected, and `20260916100000_search_sort_null_safe.sql` fixes it — **written,
+not yet applied**. And grounding through `shelf_search_games` cost 0.5-1.2s per
+title; the new `shelf_ground_titles` does five in 1.07s.
+
+**Latency is a correctness constraint, not a UX one:** median 25.7s, p90 68.8s,
+**max 227.5s**, which exceeds the 150s edge-function wall clock. The endpoint must be
+asynchronous. Sola needs telling.
+
+**16 Sep, later: steps 3-4 built.** `shelf_ground_titles` promoted from scratch
+(`execute_sql`) into a real migration — `20260916110000_ground_titles.sql` — with
+the standard revoke/grant block. **This also closes a live gap:** the scratch
+version currently still executing in production carries the default PUBLIC grant,
+so `anon` can call it right now; the migration fixes that the moment it is pushed.
+
+The endpoint itself is built as a job-plus-sweep, not a request/response call,
+because the 227.5s measured maximum is longer than any edge function is allowed to
+run at all — see `20260916120000_vague_search_jobs.sql`'s header comment for why
+that rules out `EdgeRuntime.waitUntil` too, not just a synchronous response.
+
+- `POST /vague-search` — creates a job; answers instantly from `search_cache` on a
+  repeat query (now actually wired, per §8 step 4), otherwise returns
+  `202 {status:'pending'}` and calls no model.
+- `GET /vague-search?job=<id>` — polls the job; `candidates` are full `CatalogGame`s
+  once `status` is `'done'`.
+- `vague-search-sweep` (new function, unauthenticated except by the service-role
+  bearer, same shape as `push-sweep`) — the only thing that calls DeepSeek. Bounds
+  its own wall-clock budget across a batch and leaves a job `'pending'` rather than
+  risk being killed mid-call; a stale `'processing'` claim self-heals after 5
+  minutes. Sends a OneSignal push on completion if those credentials exist yet
+  (they don't — same Josh dependency as the push work), otherwise silent.
+- `confidence` is returned unthresholded. **Step 6 — what "no confident answer"
+  looks like in the UI — is still Paul's decision, not made here.**
+
+**Still needed, and none of it is code:**
+1. Apply the two migrations (`..._search_sort_null_safe.sql`,
+   `..._ground_titles.sql`, `..._vague_search_jobs.sql`) and deploy `vague-search`
+   and `vague-search-sweep` — migration first, always.
+2. Settle the DeepSeek balance/provider question (`understand()` in
+   `supabase/functions/_shared/deepseek.ts` is the one place a swap happens).
+3. Wire the `vague-search-sweep` cron the same manual way `push-sweep`'s is
+   documented (deliberately not in a migration — see that function's comment).
+4. Tell Sola the latency numbers and get Paul's call on step 6.
+
+<details>
+<summary>The 15 Sep framing, kept for the reasoning behind the catalog work</summary>
+
+### (historical) steps 1 and 2 DONE 15 Sep
 
 The feature Josh asked for in `docs/decisions-for-josh.md`: *"Feudal Japan, guy with a
 metal arm, really hard"* → Sekiro. **Full write-up in
@@ -1269,6 +1345,8 @@ and a small `max_tokens` returns an empty string with no error.
 endpoint, `/embeddings` 404s, checked 15 Sep. Step 5 stays blocked. Voyage is free
 and the signup is five minutes, so this is an ask to repeat, not a cost to argue.
 Full detail in `docs/decisions-for-josh.md` and `scripts/search-lab/README.md`.
+
+</details>
 
 ---
 

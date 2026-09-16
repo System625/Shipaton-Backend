@@ -37,13 +37,17 @@
     "lab:xbox-bridge": "tsx scripts/link-lab/xbox-title-bridge.ts",
     "android:manifest": "tsx scripts/generate-android-manifest.ts",
     "verify:descriptive": "tsx scripts/search-lab/verify-descriptive-mapping.ts",
-    "lab:eval": "tsx scripts/search-lab/run-eval.ts"
+    "lab:eval": "tsx scripts/search-lab/run-eval.ts",
+    "lab:embed-gte": "tsx scripts/search-lab/embed-corpus-gte.ts",
+    "lab:embed-voyage": "tsx scripts/search-lab/embed-corpus.ts",
+    "lab:vague": "tsx scripts/search-lab/run-vague-eval.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.4.5"
   },
   "devDependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "@types/node": "^26.4.1",
     "supabase": "^2.0.0",
     "tsx": "^4.19.0",

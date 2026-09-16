@@ -11,3 +11,5 @@ supabase/.branches/
 # search-lab pulls these down; they are regenerable and large
 scripts/search-lab/corpus.jsonl
 scripts/search-lab/steamtags.jsonl
+# DeepSeek understandings, cached so re-measuring a retrieval change is free
+scripts/search-lab/cache/
