@@ -40,6 +40,7 @@ Everything on the backend is live and verified. What's left is app wiring.
 | Notification inbox | `shelf_notifications` and two more RPCs | Bell has no `onPress`. Section 4 |
 | Share a link | `POST /share-resolve`, `POST /share-confirm` | Not wired, no `expo-share-intent` yet. Section 5 |
 | **Finish card** | **Nothing — no endpoint, no migration** | **Blocked on three columns missing from your select. Section 7** |
+| **Vague search** | **`POST` / `GET /vague-search`** | **Built 16 Sep, not deployed yet. Nothing to wire until it is — read section 12 now so the screen can be designed ahead of it** |
 
 Two conventions that hold everywhere:
 
@@ -359,8 +360,7 @@ were the right game. That's why the confirm step stays.
 - **IGDB attribution is required** by their terms: visible, in a fixed place, can be
   small.
 - **Search for vague descriptions** ("feudal Japan, guy with a metal arm, really hard")
-  isn't built yet and is waiting on API keys. When it lands it won't change the
-  `/search` contract.
+  is a **separate endpoint**, not a change to `/search`'s contract — see section 12.
 
 ---
 
@@ -407,11 +407,13 @@ rating and a `finished_at` to build against.
 
 ## 8. What I still need from you
 
-1. **The package name and bundle ID.** `app.json` still says
-   `com.nathanakin.revenuecatgame` for both, which is the scaffold's. It's one line
-   today, but **it becomes permanent at the first Play Store upload**: Google treats a
-   changed id as a new app. Please use the same namespace for iOS so Josh registers the
-   Apple App ID once.
+1. ~~**The package name and bundle ID.**~~ **CLOSED 15 Sep, and not the way this was
+   hoping.** Both stores are now locked to `com.nathanakin.revenuecatgame` — iOS by the
+   App Store Connect record (TestFlight build 13 is live under it), Android because the
+   Play Console app was created under the same name before this was raised. There is no
+   remaining window without abandoning both app records and starting over, so nothing
+   left to do here: Josh is setting up RevenueCat and Firebase/FCM against this name with
+   no risk of rework.
 2. ~~**The app's name.**~~ **SETTLED 14 Sep — it is Prysm.** The store listings, the
    `prysm://` scheme and the bundle id all key off this. The backend repo and these
    docs still say "Shelf" throughout; that is an internal name for the service and is
@@ -755,3 +757,134 @@ problem is only visible when the user goes to choose.
 Every candidate is a full `CatalogGame`: `releaseDate`, `coverImageUrl`, `platforms`.
 Showing the year next to the title on the confirm screen and in search results is
 enough. Nothing is needed from me for this.
+
+---
+
+## 12. New (16 Sep): vague search — "the game I saw two days ago"
+
+Josh's ask: search by a half-remembered description — *"Feudal Japan, guy with a
+metal arm, really hard"* → **Sekiro: Shadows Die Twice**. It works, measured against
+77 real posts pulled from r/tipofmyjoystick (not queries any of us wrote): **0% → 42.3%
+of the time it's the very first result, 49.3% it's in the top 5**, up from a plain
+keyword search of the catalog, which answers essentially none of these. Full
+measurement in `docs/research/semantic-search.md` if you want the numbers behind the
+numbers.
+
+**Not deployed yet — this section is so you can design the screen before it lands,
+not something to wire this week.** The code is built and committed. What's left is
+non-code: pushing three migrations, deploying two functions, and Josh topping up the
+DeepSeek balance that powers it (in progress, expected soon). I'll tell you the day
+it's live; until then treat everything below as the contract it will land with.
+
+### Why this can't be "type a sentence, get a result" the way `/search` is
+
+The model call this depends on is slow, and not a little slow: measured over 71 real
+queries, **median 25.7 seconds, p90 68.8 seconds, worst case 227.5 seconds**. That's
+not a spinner, and it's long enough that our own server infrastructure can't hold a
+single request open for it either. So this is **submit, then poll** — closer to how
+you'd handle a video upload finishing processing than to how `/search` works.
+
+### The two calls
+
+```
+POST /vague-search
+  { "query": "feudal japan, guy with a metal arm, really hard" }
+```
+
+Two possible responses, both the same shape:
+
+**Someone already asked something close to this recently** (cache hit — happens
+instantly, no wait):
+
+```jsonc
+{
+  "id": "5b0e...",
+  "status": "done",
+  "query": "feudal japan, guy with a metal arm, really hard",
+  "candidates": [ /* full CatalogGame objects, best guess first */ ],
+  "confidence": null,          // not carried on a cache hit, see below
+  "fromCache": true,
+  "error": null,
+  "createdAt": "2026-09-16T20:04:11.000Z",
+  "completedAt": "2026-09-16T20:04:11.000Z"
+}
+```
+
+**Nobody's asked this before** (the common case) — you get a `202` and an empty
+result, and now you poll:
+
+```jsonc
+// 202
+{
+  "id": "5b0e...",
+  "status": "pending",
+  "query": "...",
+  "candidates": [],
+  "confidence": null,
+  "fromCache": false,
+  "error": null,
+  "createdAt": "2026-09-16T20:04:11.000Z",
+  "completedAt": null
+}
+```
+
+```
+GET /vague-search?job=5b0e...
+```
+
+Same shape, `status` becomes `"done"` (candidates filled in, `confidence` is a real
+0–1 number this time) or `"error"` (`error` is a human-readable string, `candidates`
+stays `[]`) once it's ready. Poll this until `status` is no longer `pending` or
+`processing`.
+
+### How to poll, given the latency numbers above
+
+- **Don't poll faster than every 3-4 seconds** — the median answer takes 25 seconds,
+  so a 1-second poll is ~25 wasted round trips per search for no benefit.
+- **Don't give up early.** The worst case measured is 227.5 seconds — just under 4
+  minutes. If the screen stops polling at 30 or 60 seconds because "that's how long a
+  network request should take", it will report a false failure on the very queries
+  this feature exists for (the ones with an unusual, hard-to-place description).
+  Recommend: keep polling for at least 5 minutes before telling the user to give up.
+- **Design for "still thinking" as the default state, not the exception.** A spinner
+  labelled "found it!" seconds after submit is going to be wrong most of the time.
+  Something like "this can take a couple of minutes" set at submit time will read as
+  honest instead of broken.
+- **A push notification will eventually cover the "close the app and wait" case** —
+  once OneSignal's credentials exist (still Josh's, see the push section elsewhere in
+  this doc), the server sends one titled "Found your game" the moment a job
+  completes. Nothing to build for that beyond what push already needs; it's a nice-to
+  -have on top of polling, not a replacement for it, since polling is what covers
+  someone waiting on the actual screen.
+
+### Reading the result once it's `done`
+
+- **`candidates` can be an empty array even on `status: "done"`.** That's not a bug —
+  it means either the model genuinely didn't recognise the description, or it named
+  something that isn't in our catalog. Design an explicit "couldn't find it, try
+  rephrasing or search normally" state; don't treat `[]` as still-loading.
+- **`confidence` is returned as the model gives it, 0–1, and is *not* thresholded on
+  our side.** 0.98 on Sekiro means "this is almost certainly it"; something around
+  0.5-0.6 means the model is guessing between a few plausible answers. **What to do
+  with a low number — hide results below some cutoff, or show them with a
+  "possibly…" label — is a product call for Paul, not decided yet.** Worth raising
+  with him before this screen is designed rather than picking a threshold
+  independently; I'll pass along whatever he decides.
+- **Every candidate is a full `CatalogGame`**, same as everywhere else in this API —
+  render it through the same component you already use for search results and the
+  share-confirm screen.
+- **`fromCache: true` means someone else asked something normalised to the same
+  question recently** (case/punctuation-insensitive, not a semantic match — a
+  differently-worded question about the same game is a fresh job, not a cache hit).
+  Not something to surface in the UI, just an explanation for why some answers come
+  back instantly and most don't.
+
+### One thing worth knowing so it doesn't read as a bug report
+
+The model is asked to always name its best guess rather than say "I don't know" — on
+the 71-query measurement it produced a title for all 71, right or wrong. Combined with
+every title being checked against the real catalog before it's ever shown (so a
+completely made-up title can never appear), a *wrong* answer still comes back as a
+real, existing game — never gibberish, never a 404. That's deliberate and it's why
+the confidence number matters more here than it would somewhere the model can simply
+decline to answer.
