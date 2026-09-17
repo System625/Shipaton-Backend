@@ -108,11 +108,27 @@ harmlessly instead of alerting on every run.
 
 ## What's NOT built: the pg_cron schedule
 
-Deliberately not a migration. Wiring pg_cron to call `push-sweep` needs the
-project's **service role key** inside Postgres (so `pg_net` can put it in the
+Deliberately not a migration. Wiring pg_cron to call `push-sweep` needs a
+service-role-equivalent credential inside Postgres (so `pg_net` can put it in the
 `Authorization` header), and a migration file is a file in this git history — the
 exact mistake the `.env`-vs-secrets discipline elsewhere in this project exists to
 avoid.
+
+**WHICH KEY, EXACTLY — confirmed live 17 Sep 2026 while wiring the same pattern for
+`game-release-sweep` (Events Session B), the hard way.** This project has BOTH
+Supabase key systems active at once. Inside a deployed edge function,
+`Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")` returns the **new-format secret key**
+(`sb_secret_...`, ~41 chars) — NOT the legacy `service_role` JWT
+(`eyJhbGci...`, ~200+ chars, three dot-separated parts) that `.env` holds and every
+verify script in this repo authenticates with. `push-sweep`'s auth check compares
+the caller's bearer against that same env var, so **the secret pasted into Vault
+below must be the new-format key, not the one in `.env`.** Pasting the legacy JWT
+here (the natural reading of "service role key," and what bit `game-release-sweep`
+on the first real test) makes every cron-triggered call 401 forever, with nothing
+in `cron.job_run_details` louder than a failed HTTP status — easy to wire, deploy,
+and walk away from without ever noticing it never worked. Get the new-format key
+from the dashboard's API Keys page (a different value than the "service_role" JWT
+shown in the legacy keys section).
 
 **Run this once, by hand, via the Supabase SQL editor — after `ONESIGNAL_REST_API_KEY`
 and `ONESIGNAL_APP_ID` are set as function secrets.** Checked against
@@ -122,10 +138,10 @@ and `ONESIGNAL_APP_ID` are set as function secrets.** Checked against
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- supabase_vault is already installed on this project. Paste the SERVICE ROLE key
--- (Settings -> API in the dashboard), not the anon key -- push-sweep checks for it
--- specifically.
-select vault.create_secret('<paste the service role key>', 'push_sweep_service_key');
+-- supabase_vault is already installed on this project. Paste the NEW-FORMAT
+-- secret key (sb_secret_..., Settings -> API Keys in the dashboard) -- see the
+-- warning above. NOT the legacy service_role JWT, and not the anon key either.
+select vault.create_secret('<paste the new-format secret key>', 'push_sweep_service_key');
 
 select cron.schedule(
   'push-sweep',

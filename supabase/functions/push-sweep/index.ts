@@ -12,11 +12,17 @@
 // WHO MAY CALL THIS. Not a user-facing endpoint — nobody has a reason to trigger a
 // push sweep from the app, and letting anyone do so would let anyone force-send
 // every pending notification early or hammer OneSignal's rate limit. So this
-// checks for the service role key itself as the bearer token, rather than using
-// _shared/http.ts's authenticate(), which resolves a *user* from the token and
-// would reject a service-role caller outright (there is no auth.users row for it).
-// pg_net supplies that key from Vault when the cron job fires; nothing else should
-// have it.
+// checks for a service-role credential itself as the bearer token, rather than
+// using _shared/http.ts's authenticate(), which resolves a *user* from the token
+// and would reject a service-role caller outright (there is no auth.users row for
+// it). pg_net supplies that credential from Vault when the cron job fires; nothing
+// else should have it.
+//
+// WHICH credential, precisely — see the same note in game-release-sweep/index.ts,
+// confirmed live 17 Sep 2026: `Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")` inside a
+// deployed function is this project's NEW-format secret key, not the legacy
+// service_role JWT `.env` holds. Vault must get the new-format key
+// (docs/research/push-notifications.md's wiring section spells out where).
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { errorResponse, json, corsHeaders } from "../_shared/http.ts";

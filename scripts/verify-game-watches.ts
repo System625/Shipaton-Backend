@@ -7,9 +7,20 @@
 // game_watches itself is driven through real signed JWTs, same reasoning as
 // verify-wishlist.ts -- the service-role client bypasses RLS and would pass those
 // checks whether the policy existed or not. The sweep and push-batch checks use
-// the admin client and the service-role bearer deliberately, because that is
+// the admin client and a service-role bearer deliberately, because that is
 // genuinely who calls them in production (game-release-sweep and push-sweep both
-// check for the service role key, not a user session).
+// check for a service-role credential, not a user session).
+//
+// TWO DIFFERENT "SERVICE ROLE" CREDENTIALS, ON PURPOSE. This project has both
+// Supabase key systems live: the legacy JWT (`SUPABASE_SERVICE_ROLE_KEY`, what
+// `admin` above and every other verify script authenticate with against
+// PostgREST/Postgres) and the new secret key (`SUPABASE_EDGE_SWEEP_KEY`,
+// `sb_secret_...`). Confirmed live 17 Sep 2026: an edge function's own
+// `Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")` returns the NEW-format key, not the
+// legacy one -- so calling game-release-sweep/push-sweep with the legacy JWT as
+// bearer fails their auth check even though that same JWT works everywhere else in
+// this file. Get the new-format key from the dashboard's API Keys page (NOT the
+// same value as SUPABASE_SERVICE_ROLE_KEY) and put it in .env under this name.
 //
 // Creates three users and three throwaway catalog rows, all removed at the end.
 // Safe to re-run.
@@ -155,8 +166,8 @@ async function main() {
       `Bearer ${(await alice.client.auth.getSession()).data.session!.access_token}`);
     check("and refuses a real user session too", userSweep.status === 401, String(userSweep.status));
 
-    const serviceKey = required("SUPABASE_SERVICE_ROLE_KEY");
-    const sweep = await callSweep("game-release-sweep", `Bearer ${serviceKey}`);
+    const sweepKey = required("SUPABASE_EDGE_SWEEP_KEY");
+    const sweep = await callSweep("game-release-sweep", `Bearer ${sweepKey}`);
     check("the sweep runs for the service role", sweep.status === 200, JSON.stringify(sweep.body));
     check("it wrote exactly the two watchers of the day-precise release",
       sweep.body?.swept === 2, JSON.stringify(sweep.body));
@@ -179,7 +190,7 @@ async function main() {
 
     // ---- 7. The sweep is idempotent ----
     console.log("\n7. Running the sweep again");
-    const secondSweep = await callSweep("game-release-sweep", `Bearer ${serviceKey}`);
+    const secondSweep = await callSweep("game-release-sweep", `Bearer ${sweepKey}`);
     check("a repeat sweep rings nobody's bell twice", secondSweep.body?.swept === 0,
       JSON.stringify(secondSweep.body));
     const aliceInboxAgain = (await alice.client.rpc("shelf_notifications", {})).data as any[];

@@ -12,9 +12,20 @@
 // pattern; this wants the same treatment once someone runs it.
 //
 // WHO MAY CALL THIS. Same posture as push-sweep: not user-facing, checked against
-// the service role key as the bearer token rather than a user session, because
-// letting anyone trigger it would let anyone force a bell for every watcher of
-// every game releasing today, repeatedly.
+// a service-role credential as the bearer token rather than a user session,
+// because letting anyone trigger it would let anyone force a bell for every
+// watcher of every game releasing today, repeatedly.
+//
+// WHICH credential, precisely -- confirmed live 17 Sep 2026, the hard way, via
+// verify-game-watches.ts (the first real call either sweep function has ever
+// gotten with an actual service-role bearer): `Deno.env.get
+// ("SUPABASE_SERVICE_ROLE_KEY")` inside a DEPLOYED function returns this
+// project's NEW-format secret key (sb_secret_..., ~41 chars), not the legacy
+// service_role JWT that `.env` and every script in this repo use. Both are real,
+// both authenticate as service-role, but they are different strings, so whoever
+// eventually wires the pg_cron/Vault schedule for this (see
+// docs/research/push-notifications.md) must paste the NEW-format key, not the one
+// labelled "service_role" in the dashboard's legacy keys section.
 //
 // This only writes the notifications row (shelf_sweep_game_releases handles
 // dedupe and the release_precision = 'day' guard). Actually sending a push for
@@ -28,25 +39,14 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return errorResponse("method not allowed", 405);
 
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const authHeader = req.headers.get("Authorization");
-  if (authHeader !== `Bearer ${serviceKey}`) {
-    // TEMPORARY, until this is confirmed working: this exact bearer check is
-    // copied from push-sweep, and verify-game-watches.ts just became the FIRST
-    // real call to either sweep with an actual service-role bearer -- push-sweep's
-    // own version of this check has never been exercised for real either (pg_cron
-    // is still unwired). Lengths only, never the values, so this is safe to leave
-    // in server logs.
-    console.error(
-      `sweep auth mismatch: header present=${authHeader != null} len=${authHeader?.length ?? 0}; ` +
-      `SUPABASE_SERVICE_ROLE_KEY set=${serviceKey != null} len=${serviceKey?.length ?? 0}`,
-    );
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  if (req.headers.get("Authorization") !== `Bearer ${serviceKey}`) {
     return errorResponse("this endpoint is for the scheduled sweep only", 401);
   }
 
   const admin = createClient(
     Deno.env.get("SUPABASE_URL")!,
-    serviceKey!,
+    serviceKey,
   );
 
   const { data, error } = await admin.rpc("shelf_sweep_game_releases");
