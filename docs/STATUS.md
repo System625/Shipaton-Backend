@@ -1,6 +1,6 @@
 # Shelf backend — where things stand
 
-**Last updated 15 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 17 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
 
 **The app is called Prysm.** Settled 14 Sep. "Shelf" survives as the internal name
@@ -47,6 +47,22 @@ unblocks vague search — all live and verified. The bug is the one worth readin
 the catalog, differently every run**, because it paged with an unordered `.range()`.
 See "The paging bug" below; the class of mistake is the same one that nearly shipped
 a 56%-complete Steam import on 14 Sep.
+
+**16–17 Sep: vague search shipped (committed, deployed), Android account linking
+shipped, and the Events screen's first two build sessions both shipped and are
+verified live.** Vague search's job/sweep endpoints are built (§12). Android is a
+direct join with no OAuth at all (§ account linking, "Still open here"). The Events
+screen (§17) went from a lopsided proposal — Sola's cheapest candidate turned out to
+have the most broken data — to two shipped, verified sessions in one day: a
+date-precision fix plus a hand-authored Seasonal Challenge Tracker, then the
+Release-Day Tracker those data fixes made honest to build. **What is left across the
+whole project, in priority order: an actual human test of the already-built Xbox
+linking flow (nothing else blocks it); OneSignal/APNs/FCM credentials from Josh for
+push delivery; PlayStation and Grouvee linking (not started); and two things blocked
+on Paul/product decisions (onboarding account recommendations, vague search's
+"no confident answer" UI).** Community Meetup, the Events screen's third candidate,
+is deliberately parked — the only one of the three that lets users publish content
+other users see, and that safety call should not ride along inside this sprint.
 
 ---
 
@@ -1481,6 +1497,95 @@ no error (Trap below). Both were silent, both produced plausible numbers, and ne
 was visible from the outside. Assume any loop of this shape is wrong until a check
 proves otherwise.
 
+### 17. Events screen — Session A (Seasonal Challenge + date fix) and Session B (Release-Day Tracker) — **BOTH DONE 17 Sep**
+
+Sola sent a scoping note (dated 15 Sep, reached this repo as `task.md` on 17 Sep —
+his claude.ai artifact link was link-only, unreadable both by the docs API and the
+artifact API; ask for a share-to-account link or a paste on the first failure, don't
+retry). Three candidates for the sidebar's "coming soon" Events entry: **Seasonal
+Challenge Tracker**, **Release-Day Tracker**, **Community Meetup**. Sola leaned
+Release-Day as cheapest.
+
+**The lean was backwards, and measuring it is what decided the build order.** Full
+write-up in `docs/research/events-screen.md`.
+
+- **Release-Day Tracker is the cheapest schema and the most expensive data.**
+  83.5% of the 3,748 upcoming release dates are placeholders — IGDB encodes
+  "sometime in 2027" as a real `date` (`12-31`, `09-30`, etc; re-measured against
+  live data after the fix below, not the 80.4% estimated from date patterns alone).
+  `release_tbd` does not catch this: true on 2 rows in the whole 91,806-row catalog,
+  0 of the 3,748 upcoming — decorative, same shape as roulette's dead `hours`.
+  Nothing upcoming can be ranked either: `total_rating_count = 0` on all 3,748,
+  structurally (IGDB ratings accrue after release), so a date-sorted list would lead
+  with shovelware and NSFW titles.
+- **Seasonal Challenge's data was already there**, which Sola didn't realise.
+  `library_entries.finished_at` has existed since the first migration and the app
+  already writes it on `beaten` — it just can't read it back (`LIBRARY_COLUMNS` in
+  `remoteLibrary.ts` omits it). `games.genres` is 95.4% populated. Caution: `Indie`
+  matches 56% of the catalog, so genre-only criteria are a blunt filter. Live data
+  also disagreed with itself before this shipped — 19 library rows, 0 `beaten` but 2
+  carrying a `finished_at`.
+- **Paul's push question has a concrete answer: release-day does not fold into
+  `notifications` as it stood.** Three hard blocks — `actor_id NOT NULL` (a release
+  has no actor), a 3-value `kind` CHECK, and `no_self_notification` forbidding the
+  only remaining candidate. A real migration, not a delivery detail.
+
+**Decided in session, not routed to Paul** — Sola framed it as a product decision;
+it was taken internally instead, on the strength of the measurement above. Two
+sessions, ordering load-bearing (the date fix in A is what removes the junk-feed
+risk from B — reversed, Release-Day gets built twice):
+
+- **Session A.** `release_precision text check (in ('day','month','quarter','year'))`
+  on `games`, derived from IGDB's `release_dates.date_format` (the field IGDB
+  actually exposes — `docs/research/events-screen.md`'s own claim that the source
+  is `release_dates.category` did not survive checking the live API and is
+  corrected in the migration's header). Backfilled all 91,781 dated games
+  (`npm run backfill:release-precision`). Alongside it: **Seasonal Challenge
+  Tracker** — team-authored, hand-written per season, no creation UI, no admin
+  endpoint (answers "who authors a challenge" for season one, reversibly), plus a
+  trigger settling `status = 'beaten'` vs `finished_at is not null` as the source of
+  truth (status wins; the two disagreeing rows were reconciled by clearing
+  `finished_at`, not forcing `status`). `npm run verify:challenges` — 21 checks, all
+  passing, against a real seeded challenge ("Beat 3 RPGs This Month", Oct 2026).
+- **Session B.** `game_watches` (table + RLS, no toggle endpoint — direct PostgREST
+  like `wishlist_entries` and `follows`) plus `shelf_game_watcher_count`, a
+  SECURITY DEFINER aggregate safe in `public` for the same reason
+  `shelf_popular_with_friends` is: it takes a **game** id, not a user id, and
+  returns a count, never an identity. `notifications` extended for a nullable-actor
+  `game_release` kind — `actor_id` made nullable, the `kind` CHECK widened,
+  `no_self_notification` relaxed to `actor_id is null or user_id <> actor_id`, a
+  `game_id` column with a `game_release_has_game` guard (cheap insurance against
+  the exact "column exists, never populated" shape that bit `release_tbd`), and the
+  dedupe index rebuilt to include it. `shelf_sweep_game_releases()` — SECURITY
+  DEFINER, gated on `release_precision = 'day'` only, ON CONFLICT DO NOTHING — is
+  the write side, called by a new `game-release-sweep` edge function on the same
+  service-role-bearer pattern as `push-sweep`. `/games/:id` now returns `watching`
+  and `watcherCount`. `npm run verify:game-watches` — RLS, the aggregate, the
+  sweep's precision guard, idempotency, and (see below) the push-batch fix, all
+  passing against the deployed functions.
+
+**Two real bugs found and fixed while wiring this, neither of them design flaws:**
+
+1. **`shelf_notifications` and `shelf_next_push_batch` both inner-joined `profiles`
+   on `actor_id`.** Harmless while every `kind` had a non-null actor; a
+   `game_release` row has none, and an inner join would have silently dropped every
+   one of them out of both the bell inbox and the push queue — no error, just an
+   empty result. Both are now left joins. `push-sweep`'s copy logic and
+   `pushCopyFor` were extended for the fourth kind (`name` is the actor's display
+   name for the three social kinds, the game's title for `game_release`).
+2. **This project has two live Supabase key systems, and `push-sweep`'s auth check
+   has been checking the wrong one since 15 Sep.** See "This project has two live
+   Supabase key systems" under Traps below — found only because
+   `game-release-sweep` got the first real service-role-bearer invocation either
+   sweep function has ever had. Fixed on both functions, and
+   `docs/research/push-notifications.md`'s Vault instructions corrected before
+   anyone follows them with the wrong key.
+
+**Community Meetup — parked, not scheduled.** The only one of the three that lets
+users publish content other users see (a `location text` other people would read),
+which needs its own deliberate safety call, not one made as a side effect of
+picking an Events direction.
+
 ---
 
 ## Traps
@@ -1564,6 +1669,24 @@ These are the ones that cost time if you hit them without warning.
   version the ledger recorded — do **not** reach for `migration repair`, which
   re-runs work that already succeeded. Check with
   `select version, name from supabase_migrations.schema_migrations order by version desc`.
+- **This project has two live Supabase key systems, and a deployed function's own
+  `SUPABASE_SERVICE_ROLE_KEY` is the NEW one, not the one in `.env`.** Confirmed
+  17 Sep, the hard way: `game-release-sweep`'s auth check compares the caller's
+  bearer against `Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")`, and it kept failing
+  even with the real, working service-role key from `.env`. Inside the deployed
+  function that env var returns the project's **new-format secret key**
+  (`sb_secret_...`, ~41 chars). `.env`, `scripts/supabase-admin.ts` and every verify
+  script authenticate with the **legacy `service_role` JWT** instead (`eyJhbGci...`,
+  ~200+ chars). Both are real, both are service-role-equivalent for REST/Postgres —
+  they are just different strings, and `push-sweep` has carried the identical
+  bearer check, unexercised, since 15 Sep. It would have 401'd forever the moment
+  `pg_cron`/Vault got wired up with "the service role key" read the obvious way.
+  Fixed: a `SUPABASE_EDGE_SWEEP_KEY` (the new-format key) added to `.env` /
+  `.env.example` for calling either sweep function, and
+  `docs/research/push-notifications.md`'s Vault instructions corrected to say
+  explicitly which key `vault.create_secret` needs. **Any new edge function that
+  checks a service-role bearer needs a real invocation to trust it, not just a
+  deploy — the code review looks correct either way.**
 
 ---
 
