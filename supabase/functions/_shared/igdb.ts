@@ -311,23 +311,6 @@ export function timeToBeatQuery(gameIds: number[]): string {
 }
 
 /**
- * Cover URLs are built by hand from image_id. The URL IGDB returns is `t_thumb`
- * and is too small to use (90x90). `_2x` is what a phone needs. An invalid size
- * token 404s rather than falling back.
- *
- * Sizes MEASURED by downloading the real images on 11 Sep 2026, not read off
- * IGDB's docs — this comment previously claimed `t_cover_big` was 264x374, which
- * is what IGDB publishes but not what it serves:
- *
- *   t_thumb  90x90   t_cover_big  264x352   t_cover_big_2x  528x704
- *   t_720p   540x720 t_1080p      810x1080
- *
- * Every one of those except t_thumb is 3:4 (0.750), and 14 of the 15 most-rated
- * covers measure exactly 528x704. The odd ones are small source images IGDB will
- * not upscale, so treat 3:4 as reliable but not guaranteed. 264x374 would be
- * 0.706 — a frame built to it letterboxes every cover in the app.
- */
-/**
  * Derives day/month/quarter/year precision for `first_release_date` from the
  * matching `release_dates` row's `date_format` (0=day, 1=month, 2=year, 3-6=a
  * quarter, 7=TBD). A game can carry several release_dates rows -- one per platform
@@ -361,6 +344,23 @@ export function releasePrecision(
   }
 }
 
+/**
+ * Cover URLs are built by hand from image_id. The URL IGDB returns is `t_thumb`
+ * and is too small to use (90x90). `_2x` is what a phone needs. An invalid size
+ * token 404s rather than falling back.
+ *
+ * Sizes MEASURED by downloading the real images on 11 Sep 2026, not read off
+ * IGDB's docs — this comment previously claimed `t_cover_big` was 264x374, which
+ * is what IGDB publishes but not what it serves:
+ *
+ *   t_thumb  90x90   t_cover_big  264x352   t_cover_big_2x  528x704
+ *   t_720p   540x720 t_1080p      810x1080
+ *
+ * Every one of those except t_thumb is 3:4 (0.750), and 14 of the 15 most-rated
+ * covers measure exactly 528x704. The odd ones are small source images IGDB will
+ * not upscale, so treat 3:4 as reliable but not guaranteed. 264x374 would be
+ * 0.706 — a frame built to it letterboxes every cover in the app.
+ */
 export function coverUrl(imageId: string | undefined): string | null {
   if (!imageId) return null;
   return `https://images.igdb.com/igdb/image/upload/t_cover_big_2x/${imageId}.jpg`;

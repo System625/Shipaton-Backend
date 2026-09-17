@@ -1,5 +1,5 @@
 // Exercises the Release-Day Tracker end to end (Session B of the Events build,
-// docs/research/events-screen.md §4): the game_watches table and its RLS, the
+// docs/research/events-screen.md §3): the game_watches table and its RLS, the
 // watcher_count aggregate, the deployed /games/:id fields, the release-day sweep
 // that turns a watch into a notification, and the push batch that was fixed
 // alongside it.
@@ -35,6 +35,7 @@ const { check, finish } = makeChecker();
 const SUPABASE_URL = required("SUPABASE_URL");
 const FUNCTIONS = `${SUPABASE_URL}/functions/v1`;
 const today = new Date().toISOString().slice(0, 10);
+const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
 /** Calls the deployed `games` function as a real signed-in user. */
 async function callGames(acct: Account, path: string): Promise<{ status: number; body: any }> {
@@ -72,9 +73,14 @@ async function main() {
       release_date: today, release_precision: null },
     { title: `Verify Future Game ${RUN}`, match_title: `verify future game ${RUN}`,
       release_date: "2099-01-01", release_precision: "day" },
+    // gYesterday: day-precise and already out. The sweep's trailing window
+    // (20260917160000) exists so one missed run is not a permanently missed
+    // release; without it this game's watchers would never be told.
+    { title: `Verify Yesterday Game ${RUN}`, match_title: `verify yesterday game ${RUN}`,
+      release_date: yesterday, release_precision: "day" },
   ]).select("id, title");
-  if (insertError || rows?.length !== 3) throw new Error(`seeding test games: ${insertError?.message}`);
-  const [gDay, gPlaceholder, gFuture] = rows;
+  if (insertError || rows?.length !== 4) throw new Error(`seeding test games: ${insertError?.message}`);
+  const [gDay, gPlaceholder, gFuture, gYesterday] = rows;
 
   const alice = await signUp("gwa");
   const bob   = await signUp("gwb");
@@ -152,12 +158,35 @@ async function main() {
     const bobView = await callGames(bob, gFuture.id);
     check("watching is false for someone who unwatched", bobView.body?.watching === false);
     check("watcherCount is the same for every viewer", bobView.body?.watcherCount === 1);
+    // 20260917150000: the column existed and the backfill ran, but nothing returned
+    // it. The app is where "don't trust this date" has to be decided.
+    check("releasePrecision reaches the app", aliceView.body?.releasePrecision === "day",
+      JSON.stringify(aliceView.body?.releasePrecision));
+
+    // ---- 5b. GET /games/watching, the Events screen's list ----
+    console.log("\n5b. The deployed /games/watching route");
+    const aliceList = await callGames(alice, "watching");
+    const listed = (aliceList.body ?? []) as any[];
+    check("it lists the games this user watches", listed.length === 1 &&
+      listed[0]?.id === gFuture.id, JSON.stringify(listed.map((g) => g.title)));
+    // The whole reason this route exists rather than the app joining `games` to its
+    // own game_watches rows: neither of these is a stored column.
+    check("rows are full CatalogGames, abbreviation and colorKey included",
+      typeof listed[0]?.abbreviation === "string" && typeof listed[0]?.colorKey === "string",
+      JSON.stringify(listed[0]));
+    check("watchedAt and watcherCount come with them",
+      typeof listed[0]?.watchedAt === "string" && listed[0]?.watcherCount === 1,
+      JSON.stringify({ watchedAt: listed[0]?.watchedAt, watcherCount: listed[0]?.watcherCount }));
+    const bobList = await callGames(bob, "watching");
+    check("and someone else's list is their own", ((bobList.body ?? []) as any[]).length === 0,
+      JSON.stringify(bobList.body));
 
     // ---- 6. The release-day sweep ----
     console.log("\n6. The release-day sweep");
     await alice.client.from("game_watches").insert({ game_id: gDay.id });
     await bob.client.from("game_watches").insert({ game_id: gDay.id });
     await carol.client.from("game_watches").insert({ game_id: gPlaceholder.id });
+    await alice.client.from("game_watches").insert({ game_id: gYesterday.id });
 
     const unauthedSweep = await callSweep("game-release-sweep", null);
     check("the sweep refuses a caller with no service-role bearer", unauthedSweep.status === 401,
@@ -169,8 +198,11 @@ async function main() {
     const sweepKey = required("SUPABASE_EDGE_SWEEP_KEY");
     const sweep = await callSweep("game-release-sweep", `Bearer ${sweepKey}`);
     check("the sweep runs for the service role", sweep.status === 200, JSON.stringify(sweep.body));
-    check("it wrote exactly the two watchers of the day-precise release",
-      sweep.body?.swept === 2, JSON.stringify(sweep.body));
+    // Not an equality check: the sweep is global, so the moment a real user watches
+    // a real game releasing this week, an exact count here fails for the right
+    // reason and the wrong test. What must hold is who got what, asserted below.
+    check("the sweep wrote at least this run's three notifications",
+      (sweep.body?.swept ?? 0) >= 3, JSON.stringify(sweep.body));
 
     const aliceInbox = (await alice.client.rpc("shelf_notifications", {})).data as any[];
     const aliceRelease = aliceInbox.find((n) => n.kind === "game_release");
@@ -183,6 +215,11 @@ async function main() {
       .find((n) => n.kind === "game_release");
     check("bob is notified too", !!bobRelease);
 
+    const aliceReleases = aliceInbox.filter((n) => n.kind === "game_release");
+    check("the trailing window catches a release the sweep missed yesterday",
+      aliceReleases.some((n) => n.game_id === gYesterday.id),
+      JSON.stringify(aliceReleases.map((n) => n.game_title)));
+
     const carolInbox = (await carol.client.rpc("shelf_notifications", {})).data as any[];
     check("carol, watching only the placeholder-dated game, gets nothing",
       carolInbox.filter((n) => n.kind === "game_release").length === 0,
@@ -194,9 +231,9 @@ async function main() {
     check("a repeat sweep rings nobody's bell twice", secondSweep.body?.swept === 0,
       JSON.stringify(secondSweep.body));
     const aliceInboxAgain = (await alice.client.rpc("shelf_notifications", {})).data as any[];
-    check("alice still has exactly one game_release notification",
-      aliceInboxAgain.filter((n) => n.kind === "game_release").length === 1,
-      JSON.stringify(aliceInboxAgain));
+    check("alice still has exactly one notification per game, not two",
+      aliceInboxAgain.filter((n) => n.kind === "game_release").length === 2,
+      JSON.stringify(aliceInboxAgain.filter((n) => n.kind === "game_release")));
 
     // ---- 8. A client still cannot manufacture one ----
     console.log("\n8. A client cannot write the table directly");
@@ -229,7 +266,8 @@ async function main() {
     await removeAccounts([alice, bob, carol]);
     // Cascades take game_watches and any notifications pointing at these games
     // with them.
-    await admin.from("games").delete().in("id", [gDay.id, gPlaceholder.id, gFuture.id]);
+    await admin.from("games").delete()
+      .in("id", [gDay.id, gPlaceholder.id, gFuture.id, gYesterday.id]);
     console.log("\ncleaned up test users and catalog rows.");
   }
 

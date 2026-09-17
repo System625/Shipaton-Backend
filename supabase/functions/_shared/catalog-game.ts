@@ -24,6 +24,19 @@ export type CatalogGame = {
   slug?: string;
   platforms: PlatformRef[];
   releaseDate?: string;
+  /**
+   * How precisely IGDB knows `releaseDate` — `games.release_precision`
+   * (20260917100000). Absent when IGDB has no date at all (`releaseTbd`) or, for
+   * 23 catalog rows, when no release_dates row matched.
+   *
+   * ONLY TREAT `releaseDate` AS A REAL DAY WHEN THIS IS `"day"`. IGDB encodes
+   * "sometime in 2027" as a real date — 31 Dec, 30 Sep — and flags it nowhere on
+   * the row. 83.5% of the 3,748 upcoming games in this catalog are not
+   * day-precise; 2,367 of them claim to ship on 31 December 2026. Anything that
+   * renders a date, filters on "Upcoming", or schedules a reminder has to check
+   * this first. See docs/research/events-screen.md §1.
+   */
+  releasePrecision?: "day" | "month" | "quarter" | "year";
   genres: string[];
   coverImageUrl?: string;
   timeToBeatHours?: number;
@@ -47,6 +60,7 @@ export type CatalogRow = {
   session_fit: "high" | "medium" | "low" | null;
   platforms: PlatformRef[] | null;
   score?: number | null;
+  release_precision?: "day" | "month" | "quarter" | "year" | null;
 };
 
 const NOISE_WORDS = new Set(["the", "of", "a", "an", "and", "de", "la", "el"]);
@@ -84,6 +98,7 @@ export function toCatalogGame(row: CatalogRow): CatalogGame {
     slug: row.slug ?? undefined,
     platforms: row.platforms ?? [],
     releaseDate: row.release_date ?? undefined,
+    releasePrecision: row.release_precision ?? undefined,
     genres: row.genres ?? [],
     coverImageUrl: row.cover_url ?? undefined,
     timeToBeatHours: ttb,

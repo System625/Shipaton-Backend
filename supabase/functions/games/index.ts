@@ -1,4 +1,5 @@
 // GET /games/:id                    ->  CatalogGame          (and records the view)
+// GET /games/watching               ->  (CatalogGame & { watchedAt, watcherCount })[]
 // GET /games/popular                ->  CatalogGame[]
 // GET /games/popular-with-friends   ->  (CatalogGame & { friendCount })[]
 // GET /games/recently-viewed        ->  (CatalogGame & { viewedAt })[]
@@ -85,6 +86,32 @@ Deno.serve(async (req) => {
     })));
   }
 
+  // The Events screen's list (Session B, docs/research/events-screen.md §2). The
+  // app writes game_watches straight through PostgREST -- that is why there is no
+  // toggle endpoint -- but it cannot READ the list that way and render it: a watch
+  // row is (user_id, game_id, created_at), and joining `games` client-side loses
+  // `abbreviation` and `colorKey`, which are derived here and stored nowhere. Same
+  // reason /games/popular-with-friends exists rather than the app calling that RPC.
+  //
+  // `watchedAt` and `watcherCount` are additive on top of CatalogGame, exactly like
+  // `friendCount` and `viewedAt`. Ordering (upcoming first, soonest first) is the
+  // RPC's, not the app's, so every client shows the same screen.
+  if (segment === "watching") {
+    const limit = intParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
+    const offset = intParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+
+    const { data, error } = await auth.supabase
+      .rpc("shelf_watched_games", { max_results: limit, p_offset: offset })
+      .returns<(CatalogRow & { watched_at: string; watcher_count: number })[]>();
+
+    if (error) return errorResponse(error.message, 500);
+    return json((data ?? []).map((row) => ({
+      ...toCatalogGame(row),
+      watchedAt: row.watched_at,
+      watcherCount: Number(row.watcher_count),
+    })));
+  }
+
   if (segment === "popular") {
     const limit = intParam(url, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT);
     const offset = intParam(url, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
@@ -98,13 +125,14 @@ Deno.serve(async (req) => {
   }
 
   if (!UUID.test(segment)) {
-    return errorResponse("expected /games/<uuid>, /games/popular or /games/popular-with-friends", 400);
+    return errorResponse("expected /games/<uuid>, /games/popular, /games/popular-with-friends, " +
+      "/games/recently-viewed or /games/watching", 400);
   }
 
   const { data, error } = await auth.supabase
     .from("games")
     .select(
-      "id, title, slug, release_date, genres, cover_url, critic_score, " +
+      "id, title, slug, release_date, release_precision, genres, cover_url, critic_score, " +
       "ttb_normally_hours, ttb_count, session_fit, " +
       "game_platforms(platforms(id, name, slug))",
     )
@@ -132,10 +160,17 @@ Deno.serve(async (req) => {
   // DEFINER function involved. `watcherCount` is the true total across every
   // user and RLS would answer "0 or 1" for that, so it goes through the
   // SECURITY DEFINER aggregate instead.
-  const [{ data: ownWatch }, { data: watcherCount, error: watcherCountError }] = await Promise.all([
+  const [
+    { data: ownWatch, error: ownWatchError },
+    { data: watcherCount, error: watcherCountError },
+  ] = await Promise.all([
     auth.supabase.from("game_watches").select("user_id").eq("game_id", segment).maybeSingle(),
     auth.supabase.rpc("shelf_game_watcher_count", { p_game_id: segment }),
   ]);
+  // Both errors are checked. A failed read here used to fall through as
+  // `watching: false` -- indistinguishable from "not watching", so the toggle
+  // would render off and the next tap would 23505 against a row that exists.
+  if (ownWatchError) return errorResponse(ownWatchError.message, 500);
   if (watcherCountError) return errorResponse(watcherCountError.message, 500);
 
   // Recording the view happens HERE rather than in the app, because fetching a game
