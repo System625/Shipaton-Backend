@@ -62,8 +62,26 @@ Deno.serve(async (req) => {
 
   let sent = 0;
   let failed = 0;
-  for (const row of rows as { id: string; user_id: string; kind: string; actor_display_name: string }[]) {
-    const { title, body } = pushCopyFor(row.kind as "follow" | "post_like" | "post_comment", row.actor_display_name);
+  for (const row of rows as {
+    id: string;
+    user_id: string;
+    kind: string;
+    actor_display_name: string | null;
+    game_title: string | null;
+  }[]) {
+    // game_release rows have no actor; every other kind has no game. Pick whichever
+    // this row actually carries rather than assuming actor_display_name (see
+    // 20260917140000 on why the old inner join used to make that safe to assume).
+    const name = row.kind === "game_release" ? row.game_title : row.actor_display_name;
+    if (!name) {
+      // Shouldn't happen — game_release_has_game and the notify triggers both
+      // guarantee this — but a null title/actor is a card with nothing to say,
+      // not a retry-worthy failure, so it's skipped rather than sent broken.
+      failed++;
+      console.error(`notification ${row.id} (${row.kind}) has no name to render`);
+      continue;
+    }
+    const { title, body } = pushCopyFor(row.kind as "follow" | "post_like" | "post_comment" | "game_release", name);
     try {
       await sendOneSignalPush(apiKey, appId, { externalId: row.user_id, title, body });
       await admin.from("notifications").update({ pushed_at: new Date().toISOString() }).eq("id", row.id);

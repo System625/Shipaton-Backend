@@ -122,6 +122,22 @@ Deno.serve(async (req) => {
     platforms: (nested.game_platforms ?? []).map((gp) => gp.platforms).filter(Boolean),
   };
 
+  // `watching`/`watcherCount` for the Release-Day Tracker (game_watches,
+  // 20260917120000) -- additive on top of CatalogGame, same pattern as
+  // `friendCount` and `viewedAt` above: the rest of the object stays
+  // byte-identical to what /search and /games/popular return.
+  //
+  // `watching` is a plain select under the caller's own JWT: RLS on game_watches
+  // scopes it to their own row regardless, so this reads correctly with no
+  // DEFINER function involved. `watcherCount` is the true total across every
+  // user and RLS would answer "0 or 1" for that, so it goes through the
+  // SECURITY DEFINER aggregate instead.
+  const [{ data: ownWatch }, { data: watcherCount, error: watcherCountError }] = await Promise.all([
+    auth.supabase.from("game_watches").select("user_id").eq("game_id", segment).maybeSingle(),
+    auth.supabase.rpc("shelf_game_watcher_count", { p_game_id: segment }),
+  ]);
+  if (watcherCountError) return errorResponse(watcherCountError.message, 500);
+
   // Recording the view happens HERE rather than in the app, because fetching a game
   // to render its detail screen IS the view. One call, nothing for the client to
   // remember, and no way for "what the app shows" and "what the server recorded" to
@@ -156,5 +172,9 @@ Deno.serve(async (req) => {
     else await write;
   }
 
-  return json(toCatalogGame(row));
+  return json({
+    ...toCatalogGame(row),
+    watching: ownWatch != null,
+    watcherCount: Number(watcherCount ?? 0),
+  });
 });

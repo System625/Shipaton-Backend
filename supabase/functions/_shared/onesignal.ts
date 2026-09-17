@@ -48,20 +48,25 @@ export async function sendOneSignalPush(
   }
 }
 
-// The copy. Kept next to the sender rather than in the sweep loop so the three
-// notify triggers' semantics (20260909121000_notifications.sql) and the three push
-// strings stay in one place — add a fourth `kind` in the schema and this is the
-// other place that has to change.
+// The copy. Kept next to the sender rather than in the sweep loop so the notify
+// triggers' semantics (20260909121000_notifications.sql), the game_release sweep's
+// (20260917130000), and the push strings stay in one place — add a kind in the
+// schema and this is the other place that has to change.
+//
+// `name` is the actor's display name for the three social kinds, and the game's
+// title for `game_release` — there is no actor to name (20260917130000).
 export function pushCopyFor(
-  kind: "follow" | "post_like" | "post_comment",
-  actorName: string,
+  kind: "follow" | "post_like" | "post_comment" | "game_release",
+  name: string,
 ): { title: string; body: string } {
   switch (kind) {
     case "follow":
-      return { title: "New follower", body: `${actorName} started following you` };
+      return { title: "New follower", body: `${name} started following you` };
     case "post_like":
-      return { title: "New like", body: `${actorName} liked your post` };
+      return { title: "New like", body: `${name} liked your post` };
     case "post_comment":
-      return { title: "New comment", body: `${actorName} commented on your post` };
+      return { title: "New comment", body: `${name} commented on your post` };
+    case "game_release":
+      return { title: "Out today", body: `${name} just released` };
   }
 }
