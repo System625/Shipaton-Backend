@@ -1,6 +1,6 @@
 -- Extends `notifications` (20260909121000) for the Release-Day Tracker's
 -- watch-notify path -- Session B of the Events build, docs/research/events-
--- screen.md §3/§4. A release has no actor, so three of that table's constraints
+-- screen.md §2/§3. A release has no actor, so three of that table's constraints
 -- have to move before a `game_release` row can exist at all:
 --
 --   actor_id uuid NOT NULL                                   -> made nullable

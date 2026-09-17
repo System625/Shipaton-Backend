@@ -1,6 +1,6 @@
 -- game_watches: "notify me when this releases," the toggle behind the Release-Day
 -- Tracker -- Session B of the Events screen build (decision 17 Sep 2026,
--- docs/research/events-screen.md §4). Session A landed first on purpose:
+-- docs/research/events-screen.md §2). Session A landed first on purpose:
 -- release_precision (20260917100000) is what lets the sweep in the next migration
 -- tell an announced release day from IGDB's end-of-period placeholder. Reversed,
 -- this gets built twice against data that isn't honest yet.

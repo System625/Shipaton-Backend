@@ -1,5 +1,5 @@
 // Hand-authors a season's challenges. This IS the authoring mechanism -- decision
-// 17 Sep 2026 (research/events-screen.md §4) was team-authored, no creation UI, no
+// 17 Sep 2026 (research/events-screen.md §2) was team-authored, no creation UI, no
 // admin endpoint. Adding a challenge means adding a row here and re-running this.
 //
 //   npx tsx scripts/seed-challenges.ts

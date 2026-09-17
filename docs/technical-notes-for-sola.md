@@ -915,17 +915,24 @@ Every challenge, with your progress against it:
     "id": "…",
     "title": "Beat 3 RPGs This Month",
     "description": "Finish three Role-playing games between 1 and 31 October to complete this challenge.",
-    "startDate": "2026-10-01",
-    "endDate": "2026-10-31",
+    "start_date": "2026-10-01",
+    "end_date": "2026-10-31",
     "criteria": { "genres": ["Role-playing (RPG)"], "count": 3 },
     "status": "upcoming",              // "active" | "upcoming" | "ended", computed server-side
-    "myProgress": { "count": 0, "target": 3 }
+    "my_progress": { "count": 0, "target": 3 }
   }
 ]
 ```
 
-(Field names above are camelCase as the app will see them through supabase-js; the
-column names in Postgres are snake_case, same as everywhere else.)
+**These come back snake_case** — `start_date`, `end_date`, `my_progress` — not
+camelCase. This is an RPC, not an edge function, so §1's rule applies: PostgREST
+returns the row as stored and supabase-js does not convert case. (An earlier draft
+of this section showed camelCase keys and was wrong; nothing changed server-side.)
+
+```jsonc
+{ "id": "…", "title": "…", "start_date": "2026-10-01", "end_date": "2026-10-31",
+  "criteria": { … }, "status": "upcoming", "my_progress": { "count": 0, "target": 3 } }
+```
 
 - **Team-authored only.** No creation UI, no admin endpoint — a challenge is a row,
   written by `scripts/seed-challenges.ts` on our side. That answers "who authors a
@@ -961,14 +968,21 @@ IGDB before building — that field (`release_dates.category` in older docs and 
 that draft) doesn't exist on the current API; the real one is `release_dates.date_format`,
 and it was not being fetched anywhere in this repo until today.
 
-Every `CatalogGame`'s `release_date` now sits next to `releasePrecision`:
-`"day" | "month" | "quarter" | "year" | null`. `null` means either genuinely unknown
-(`releaseTbd: true`) or the rare unmatched row (21 of them, listed in the backfill
-log). **Only trust a release date as day-accurate if `releasePrecision === "day"`.**
+Every `CatalogGame` now carries `releasePrecision` next to `releaseDate`:
+`"day" | "month" | "quarter" | "year"`, absent when it is genuinely unknown
+(`releaseTbd`) or on the 23 rows where no IGDB release_dates row matched.
+**Only trust a release date as day-accurate if `releasePrecision === "day"`.**
+
+It reaches you everywhere a `CatalogGame` does — `/search`, `/games/:id`,
+`/games/popular`, `/games/popular-with-friends`, `/games/recently-viewed`,
+`/games/watching` and `/roulette` — as of 17 Sep. (It was added to the catalog
+earlier that day but returned by nothing; if you read an earlier copy of this
+section saying it was already on every `CatalogGame`, that was true of the column
+and not of the API. It is true of both now.)
 
 Measured on the live catalog after the backfill:
-- Whole catalog (91,781 dated games): 86,194 day, 1,439 quarter, 1,007 month, 3,141
-  year.
+- Whole catalog: 91,804 dated games — 86,194 day, 3,141 year, 1,439 quarter, 1,007
+  month, and 23 that resolved to nothing.
 - **Just the upcoming 3,748: 83.5% are NOT day-precise** (617 day, 876 quarter, 159
   month, 2,086 year, 10 unresolved) — confirms the research doc's original 80.4%
   estimate, now against real IGDB precision data instead of inferred from date
@@ -979,3 +993,92 @@ Measured on the live catalog after the backfill:
   reminders** (`src/services/notifications/reminders.ts`) — both still read the raw
   `release_date` with no precision check. That's the next place this should land;
   raising it here so it doesn't get lost as "already fixed" when it's only half fixed.
+
+---
+
+## 14. New (17 Sep): the Release-Day Tracker — watching a game
+
+Session B, and the other half of Events. Your note's second candidate, built on the
+precision fix above: without it, a "notified day-of" promise would have fired on
+IGDB's 31 December placeholders for four upcoming games in five.
+
+### Watching and unwatching — no endpoint, same as the wishlist
+
+```ts
+// watch
+await supabase.from('game_watches').insert({ game_id: gameId })
+// unwatch
+await supabase.from('game_watches').delete().eq('game_id', gameId)
+```
+
+`user_id` defaults to the caller and RLS is own-rows-only, so you never send it —
+identical to `wishlist_entries` and `follows`. Watching the same game twice is a
+`23505`, not a second row; treat it as "already watching", not an error.
+
+### The Events screen's list
+
+```
+GET /games/watching?limit=20&offset=0
+```
+
+Full `CatalogGame`s (so the existing game-row component renders them unchanged),
+each with two extra fields:
+
+```jsonc
+{ /* …CatalogGame, including releasePrecision… */
+  "watchedAt": "2026-09-17T16:04:11.982Z",
+  "watcherCount": 212 }
+```
+
+- **Ordering is the server's:** upcoming first, soonest first; undated games sort
+  with them ("no date yet" is still something you're waiting for); already-released
+  ones fall below, most recent first, so a watch doesn't vanish the morning it ships.
+- **Read the list through this route, not through `game_watches` + a join.** A watch
+  row is only `(user_id, game_id, created_at)`, and a `games` row fetched directly
+  has no `abbreviation` and no `colorKey` — both are derived server-side, not stored,
+  and `GameCover.tsx` silently renders every missing `colorKey` as the same grey.
+  Same reason `/games/popular-with-friends` exists.
+- **This is "games I watch", not "everything releasing this month".** A browse feed
+  of the whole upcoming catalog is deliberately not built: nothing upcoming can be
+  ranked (IGDB user-rating counts are 0 on all 3,748 upcoming rows, structurally —
+  ratings accrue after release), so a date-sorted catalog browse opens on
+  shovelware. What curates that list is still an open product question.
+
+### On a game's detail screen
+
+`GET /games/:id` now also returns `watching` (bool, yours) and `watcherCount` (int,
+everyone's — the real total, not what RLS would let you count client-side).
+
+### The notification
+
+A new `kind` on the existing bell, so `rpc('shelf_notifications')` needs one change
+in your renderer:
+
+```jsonc
+{ "kind": "game_release", "actor_id": null, "handle": null, "display_name": null,
+  "game_id": "…", "game_title": "Hollow Knight: Silksong", "game_cover_url": "https://…" }
+```
+
+- **`actor_id` and every profile field are null** — a release has no actor, nobody
+  did anything. Anything that renders an avatar or "X did Y" has to branch on `kind`
+  first, or it will dereference null. `game_id`/`game_title`/`game_cover_url` are new
+  on *every* row of this RPC (null for the three social kinds) so a release card
+  renders without a second round trip.
+- **One bell per watcher per game, ever** — enforced by a unique index, not by the
+  sweep running exactly once.
+- **Only fires for `releasePrecision === "day"`.** A game dated "Q4 2026" never
+  notifies, by design; that is the whole reason the precision fix shipped first.
+- **Nothing schedules it yet.** The sweep that writes these rows is deployed but
+  unscheduled (same `pg_cron` step push still waits on), so no `game_release`
+  notification has ever been written in production. The client work can land ahead
+  of it; just don't read "no bells yet" as a bug on your side.
+
+### Still open, and worth your answer
+
+- **Are the on-device release reminders live in the shipped build?**
+  (`src/services/notifications/reminders.ts`.) They schedule from `release_date`
+  without any precision check, so today they fire on placeholder dates through a
+  path that never touches the backend. `releasePrecision` is now in every
+  `CatalogGame` specifically so that can be gated client-side.
+- **What is "Passport stamps"?** Named in your note as what challenges tie into.
+  There is no passport or stamp table, column, function or doc on the backend.

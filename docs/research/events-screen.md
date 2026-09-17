@@ -1,24 +1,23 @@
-# Events screen — what the data actually supports
+# The Events screen
 
-Sola's scoping note (15 Sep 2026, "Events screen — what data would we actually show?")
-lays out three candidates and leans Release-Day Tracker as cheapest. This checks each
-one against the **live catalog and live user data** on 17 Sep 2026 rather than against
-the schema on paper.
+Measured, decided, built, reviewed and verified on 17 September 2026. This replaces
+the running research draft of the same name — that doc accumulated three layers of
+inline corrections as the build overtook it, and the corrections mattered more than
+the draft. Everything below is what is true of the live project now.
 
-The headline: **the lean is backwards.** Release-Day Tracker is the cheapest *schema*
-and by far the most expensive *data*. Seasonal Challenge is the one whose data is
-already sitting there, written and unread.
-
-Everything below is measured. Scripts are throwaway; the queries are reproduced so
-they can be re-run.
+- **Sola's scoping note** (15 Sep, reached this repo as `task.md`): three candidates
+  for the sidebar's "coming soon" Events entry, framed as blocked on Paul.
+- **Outcome:** two of the three shipped the same day. Nothing was routed to Paul.
+- **The app contract** is `docs/technical-notes-for-sola.md` §13–14. This document is
+  the reasoning and the evidence; that one is what Sola builds against.
 
 ---
 
-## 1. The claim that decides it
+## 1. The measurement that reversed the lean
 
-> "release_date — already on every CatalogGame"
-
-**Literally true, and it does not mean what it needs to mean.**
+Sola's note leaned **Release-Day Tracker** as cheapest: *"release_date — already on
+every CatalogGame"*, one small join table, done. That claim is literally true and it
+does not mean what it needs to mean.
 
 ```
 total games                     91,806
@@ -26,253 +25,287 @@ release_date IS NULL                 2
 release_date > today             3,748   <- the whole "upcoming" universe
 ```
 
-So yes, the column is populated. Now the three things that make it unusable as-is.
+Three things make that column unusable as a day-of promise.
 
-### 1a. 80.4% of upcoming release dates are placeholders
+### 1a. Most upcoming dates are placeholders
 
-IGDB encodes "sometime in 2027" as a real `date`. It does not flag it. Counting the
-end-of-period conventions (`12-31`, `09-30`, `06-30`, `03-31`) across all 3,748
-upcoming rows, paged in `release_date, id` order:
+IGDB encodes "sometime in 2027" as a real `date` — 31 Dec, 30 Sep — and flags it
+nowhere on the game row. Measured from date patterns first (80.4%), then confirmed
+against IGDB's own precision field after the backfill:
 
-| Year | Upcoming | Placeholder | Share |
-|------|---------:|------------:|------:|
-| 2026 | 2,998 | 2,367 | 79% |
-| 2027 | 703 | 608 | 86% |
-| 2028 | 34 | 31 | 91% |
-| 2029–2040 | 13 | 6 | — |
-| **Total** | **3,748** | **3,012** | **80.4%** |
+| Upcoming rows | day | month | quarter | year | unresolved |
+|--------------:|----:|------:|--------:|-----:|-----------:|
+| 3,748 | 617 | 159 | 876 | 2,086 | 10 |
 
-A "Release-**Day** Tracker" whose defining promise is *notified day-of* would, for four
-games in five, notify on a day the publisher never announced. 2,367 games currently
-claim to launch on 31 December 2026.
+**83.5% of upcoming releases are not day-precise.** 2,367 games currently claim to
+launch on 31 December 2026. A "Release-**Day** Tracker" built on that notifies four
+games in five on a day the publisher never announced.
 
-### 1b. `release_tbd` does not catch this
+### 1b. `release_tbd` does not catch it
 
-The catalog has a `release_tbd boolean not null default false` column that exists for
-exactly this purpose.
-
-```
-release_tbd = true, whole catalog:        2
-release_tbd = true, among the 3,748:      0
-```
-
-**It is inert.** Zero of the 3,012 placeholder-dated games are flagged. The column
-that would let the UI render "Q4 2026" instead of a fake day is not being populated by
-the seed. This is the same shape as the `hours` column on roulette and the dead config
-comments — a field that reads as a safeguard and isn't one.
+`release_tbd` is true on **2 rows in the whole catalog** and **0 of the 3,748
+upcoming**. It is `!first_release_date` in the mapper — correct for what it checks,
+which is "IGDB gave no date at all", a much narrower thing than "the date is vague".
+Not wired wrong; just not the safeguard its name suggests. Left as-is, documented.
 
 ### 1c. Nothing upcoming can be ranked
 
-The catalog's only popularity signal is `total_rating_count` (IGDB *user rating count*).
-
 ```
-upcoming, total_rating_count IS NULL:        0
-upcoming, total_rating_count = 0:        3,748   <- all of them
-upcoming, total_rating_count >= 1:           0
-upcoming, critic_score IS NOT NULL:          1
+upcoming, total_rating_count = 0:      3,748   <- all of them
+upcoming, critic_score IS NOT NULL:        1
 ```
 
-This is **structural, not a backfill gap**: IGDB user ratings accrue after release, so
-an unreleased game has none by definition. `/games/popular` orders by
-`total_rating_count desc` — against upcoming games that ordering is a no-op and the
-list falls back to insertion order.
+**Structural, not a backfill gap:** IGDB user ratings accrue after release, so an
+unreleased game has none by definition. `/games/popular` orders by
+`total_rating_count desc`; against upcoming rows that ordering is a no-op. A
+date-sorted browse of everything releasing soon therefore opens on shovelware and
+NSFW-adjacent titles — same root cause as Paul's release-date filter returning 73k
+rows of junk for "2020s", arriving through a different door.
 
-What a date-sorted upcoming list actually returns today, soonest first:
+### 1d. Meanwhile, Seasonal Challenge's data was already sitting there
 
-```
-2026-09-18  WomboCombo
-2026-09-18  Chief Cenab: Şahmaran
-2026-09-18  Toxic Yuri
-2026-09-18  The Grinch 2: Saving Christmas
-2026-09-18  Gyaru to Papakatsu: Yarichin Chuunen Oji no Enjoy PacoPaco Life
-2026-09-18  Too Many Balls
-```
+- `library_entries.finished_at` has existed since the first migration, and the app
+  already writes it on `beaten` (`useLibraryStore.ts:107`) — it just can't read it
+  back (`LIBRARY_COLUMNS` omits it).
+- `games.genres` is populated on 95.4% of the catalog.
 
-591 games release in the next 30 days; 256 of those are placeholder-dated. This is the
-same failure already documented for Paul's release-date *filter* — "2020s" returning
-73k rows of junk — arriving through a different door. The two-pass seed took everything
-released after the cutoff, which means every unreleased shovelware title on IGDB is in
-here, and none of the signals that normally push them down exist yet.
-
-**A Release-Day Tracker built on this data ships an NSFW-adjacent shovelware feed as a
-flagship screen.** That is the finding.
+So "beat 3 RPGs in October" is one `count(*)` over data that exists. Two cautions
+that carried into the build: `Indie` matches 51,512 games (56% of the catalog), so
+genre-only criteria can be no filter at all; and the live data disagreed with itself
+— 19 library rows, **0 `beaten`, 2 carrying a `finished_at`**.
 
 ---
 
-## 2. What each candidate actually costs
+## 2. The decision
 
-### Release-Day Tracker — cheap schema, expensive data
+**Taken 17 Sep by Josh in session, deliberately not routed to Paul.** Sola framed it
+as a product decision; it was taken internally on the strength of the measurement, so
+nothing is owed to Paul before building.
 
-The schema half is genuinely small and Sola is right about it:
-
-```sql
-create table game_watches (
-  user_id    uuid not null references auth.users(id) on delete cascade,
-  game_id    uuid not null references games(id) on delete cascade,
-  created_at timestamptz not null default now(),
-  primary key (user_id, game_id)
-);
-create index game_watches_game on game_watches (game_id);   -- watcher_count
-```
-Plus RLS (own rows only), and `watcher_count` as an aggregate. Half a day.
-
-The data half is the project:
-
-1. **A date-precision column.** `release_precision text check (in ('day','month','quarter','year'))`,
-   derived from IGDB's `release_dates.category` — which the seed already fetches and
-   discards, the same way `keywords`/`game_modes` were being discarded before the
-   descriptive-fields migration. Without it the UI cannot tell "18 Sep 2026" from
-   "sometime in 2026", and **no notification can be honest**.
-2. **A curation gate.** With no popularity signal, the only defensible filters are
-   editorial or derived: followed-franchise, wishlisted, on a platform the user owns,
-   or a hand-maintained "tracked" flag. "Everything releasing this month" is not a
-   product.
-3. **A re-sync loop.** Announced dates move constantly. Today's seed is one-shot; a
-   watched game whose date slips would notify on the stale date forever.
-
-Realistic: **3–4 days**, most of it in the seed layer, not the API.
-
-### Seasonal Challenge — the data is already there
-
-Sola flags the criteria shape and authorship as open. Both are real. But the part he
-treats as the uncertain bit — computing progress — is the part that already works:
-
-- `library_entries.finished_at timestamptz` has existed since the first migration.
-- **The app already writes it.** `useLibraryStore.ts:107` sets `finished_at` the moment
-  a game goes `beaten`. It just can't read it back — `LIBRARY_COLUMNS` in
-  `remoteLibrary.ts:19` omits it (documented in technical-notes §7, still open).
-- `games.genres text[]` is populated on 95.4% of the catalog (4,184 empty of 91,806).
-
-So "beat 3 RPGs between 1 and 31 October" is a `count(*) where finished_at between $1
-and $2 and genres && '{Role-playing (RPG)}'` — one RPC over data that exists.
-
-Two cautions:
-
-- **Genre is a blunt filter.** `Indie` matches 51,512 games — 56% of the catalog. `RPG`
-  (16,083) and `Shooter` (7,146) are usable; an "Indie challenge" is "any game".
-- **Live data disagrees with itself right now.** 19 library rows: 3 `playing`, 16
-  `backlog`, **0 `beaten` — but 2 rows carry a `finished_at`.** Before any progress
-  query ships, decide whether the source of truth is `status = 'beaten'` or
-  `finished_at is not null`, because today they do not agree.
-- **"Passport stamps" does not exist on the backend.** Sola says challenges tie into
-  "library data we already compute for Passport stamps." There is no passport or stamp
-  table, column, function or doc in this repo. That is either an app-side concept or a
-  planned one — worth confirming before it's treated as a foundation.
-
-Realistic: **2–3 days**, and unlike Release-Day none of it is data remediation.
-
-### Community Meetup — heaviest, and Sola is right
-
-Agreed on all counts, with one addition: it is the **only one of the three that lets
-users write content other users see.** Everything user-generated in Shelf today
-(posts, comments) came with a block list and a privacy line that was deliberately not
-widened. An in-person `location text` authored by one user and shown to others is a
-safety surface, not just a moderation one. That decision shouldn't be made as a
-side-effect of picking an Events direction.
-
-Realistic: **1.5–2 weeks** including moderation. Not a 30 Sep candidate.
-
----
-
-## 3. Paul's question 2, answered concretely
-
-> Does "watching" need its own push category, or does it fold into the existing
-> notification system?
-
-**It does not fold in.** Three hard blocks in `notifications` (20260909121000):
-
-| Constraint | Why release-day breaks it |
+| | Verdict |
 |---|---|
-| `actor_id uuid NOT NULL` | A release has no actor. Nobody did anything. |
-| `kind text check (in ('follow','post_like','post_comment'))` | No system-event kind exists. |
-| `constraint no_self_notification check (user_id <> actor_id)` | With no actor, the only candidate is the user themselves — which this forbids. |
+| **Seasonal Challenge** | **Build first.** Data already exists. Team-authored, hand-written per season — no creation UI, no admin endpoint, no moderation surface. Answers "who authors a challenge" for season one, reversibly. |
+| **Release-Day Tracker** | **Build second, in full** — cheapest schema, most expensive data. The date fix goes first; reversed, it gets built twice. |
+| **Community Meetup** | **Parked.** The only one of the three that lets users publish content other users read (`location text`). That safety call shouldn't ride along inside an Events sprint. |
 
-Also: every row today is written by a `SECURITY DEFINER` trigger on a social action, and
-there is **no INSERT policy on the table at all**. Release-day rows would need a new
-write path regardless.
-
-Minimum change: make `actor_id` nullable, extend the `kind` check with e.g.
-`game_release`, add `game_id uuid references games(id)`, relax `no_self_notification`
-to `actor_id is null or user_id <> actor_id`, and extend the dedupe index. That is a
-real migration, not a delivery detail — same category as `pushed_at` (20260915160000).
-
-**Two things that do not change no matter what Paul picks:**
-
-- Push delivery is still blocked on Josh — APNs `.p8` and FCM service-account JSON,
-  which OneSignal requires and does not replace (`push-notifications.md` §1). The
-  `pg_cron` wiring is still unrun.
-- **The app already schedules local release reminders on-device**
-  (`src/services/notifications/reminders.ts`, cited in the notifications migration).
-  Those fire without any server involvement — which means **the bad dates in §1a can
-  reach users through a path that doesn't touch the backend at all.** Whatever Paul
-  decides about Events, §1a is worth telling Sola about on its own.
+**Ordering was load-bearing**, and it held: the precision column is the only reason
+the release sweep can tell an announcement from a placeholder.
 
 ---
 
-## 4. Decision — taken 17 Sep 2026
+## 3. What shipped
 
-Decided by Josh in session, **not routed to Paul**. Sola's note framed this as blocked on
-a product decision; it was taken internally instead, so nothing is owed to Paul before
-building. Recorded here so the build doesn't re-open it.
-
-**The measurement that drove it:** Release-Day is the cheapest to build and the most
-expensive to build *correctly*, and the entire gap is data we don't currently store.
-So the data fix goes first and the feature follows it.
+Seven migrations, two edge-function changes, one new function, two verify suites.
 
 ### Session A — Seasonal Challenge + the date fix
 
-1. **Seasonal Challenge Tracker**, **team-authored, hand-written** per season. No
-   creation UI, no admin endpoint, no moderation surface. This answers "who authors a
-   challenge" for season one without committing to user-authored challenges, and is
-   reversible.
-   - Progress is a `count(*)` over `library_entries.finished_at` + `games.genres`.
-   - **Settle first:** `status = 'beaten'` vs `finished_at is not null` as the source of
-     truth. Today they disagree (0 `beaten`, 2 with `finished_at`).
-   - **Avoid genre-only criteria that match half the catalog** — `Indie` is 56% of it.
-2. **`release_precision`** from IGDB's `release_dates.category`, which the seed already
-   fetches and discards. Approved as catalog hygiene in its own right, independent of
-   Events:
-   - it makes Paul's "Upcoming" search filter honest, and
-   - it stops the app's **on-device** reminders firing on 31 Dec placeholders — a path
-     that never touches the backend.
-   - While in there: `release_tbd` is populated on 2 of 91,806 rows. Wire it or drop it;
-     leaving a decorative safeguard is how this bit us.
+**`20260917100000_release_precision.sql`**
 
-### Session B — Release-Day Tracker, in full
+`games.release_precision text check (in ('day','month','quarter','year'))`, derived
+from IGDB's `date_format` on the `release_dates` row matching `first_release_date`.
 
-Buildable *fully* only because A fixed its data. `game_watches` + RLS + `watcher_count`,
-the watch/unwatch toggle, and the `notifications` migration for a system-actor
-`game_release` kind (nullable `actor_id`, extended `kind` check, `game_id`, relaxed
-`no_self_notification`, extended dedupe index — see §3).
+> **The plan was wrong about the source field, and checking it live is what caught
+> that.** The research draft said the value came from `release_dates.category` and
+> that the seed "already fetches and discards it". IGDB's current API has no
+> `category` field — the name is stale — and the seed was fetching nothing from
+> `release_dates` at all. IGDB accepts an unknown *sub*-field in a query without
+> erroring, so a caller using `category` would have got `undefined` on every row and
+> never noticed.
 
-**Ordering is load-bearing:** doing the date fix in A is what removes the junk-feed risk
-from B. Reversed, Release-Day gets built twice.
+Backfilled the whole catalog (`npm run backfill:release-precision`):
 
-### Community Meetup — parked
+```
+91,804 dated games -> 86,194 day · 3,141 year · 1,439 quarter · 1,007 month · 23 unresolved
+```
 
-Not scheduled. It is the only one of the three that lets users publish content other
-users see, and the safety call on user-authored `location` text is a deliberate decision,
-not something that should ride along inside an Events sprint.
+**`20260917110000_seasonal_challenges.sql`**
+
+- `seasonal_challenges` — title, description, window, `criteria jsonb`, RLS readable
+  by any signed-in user, **no insert/update/delete policy at all**: "team-authored"
+  made physical. A season is `scripts/seed-challenges.ts` plus a re-run.
+- `criteria` shape `{"genres": [...], "count": n}`, guarded by a CHECK.
+  **A missing key evaluates to SQL NULL, not FALSE**, so `{}` passed the naive
+  version of that constraint — the `?` existence tests came first after review. Same
+  family of mistake as `release_tbd`: an absent value read as "checked and fine".
+- **`status = 'beaten'` settled as the source of truth**, `finished_at` as the
+  timestamp attached to it, enforced by a trigger both ways (set on `beaten`, cleared
+  off it). The two disagreeing rows were reconciled by clearing `finished_at` — it is
+  the weaker signal, being a column the app cannot even read back.
+- `shelf_challenges()` returns every challenge with a computed
+  `status` (active/upcoming/ended) and the caller's `my_progress {count, target}`.
+
+### Session B — Release-Day Tracker
+
+**`20260917120000_game_watches.sql`** — `game_watches (user_id, game_id, created_at)`,
+own-rows-only RLS, **no toggle endpoint**: the app writes it straight through
+PostgREST like `wishlist_entries` and `follows`. Plus `shelf_game_watcher_count`,
+SECURITY DEFINER because "own rows only" would otherwise answer 0 or 1 — safe for the
+same reason `shelf_popular_with_friends` is: it takes a *game* id and returns a
+count, never an identity.
+
+**`20260917130000_game_release_notifications.sql`** — the answer to Paul's question
+2 ("does watching fold into the existing notification system?") is **no**, and it
+took a real migration: `actor_id` made nullable, the `kind` CHECK widened to
+`game_release`, `no_self_notification` relaxed to `actor_id is null or user_id <>
+actor_id`, a `game_id` column with a `game_release_has_game` guard, and the dedupe
+index rebuilt to include it (so: one bell per watcher per game, ever, regardless of
+how many times the sweep runs). Plus `shelf_sweep_game_releases()`, gated on
+`release_precision = 'day'` **only**.
+
+**`20260917140000_game_release_push_batch.sql`** and the same fix in
+`shelf_notifications`: both inner-joined `profiles` on `actor_id`. Harmless while
+every kind had an actor — and a silent, error-free disappearance of every
+`game_release` row from both the bell inbox and the push queue the moment one
+existed. Caught before any existed.
+
+**`game-release-sweep`** edge function, service-role-bearer only, same posture as
+`push-sweep`. Getting its first-ever real service-role call is what exposed the
+project's **two live Supabase key systems** — a deployed function's own
+`SUPABASE_SERVICE_ROLE_KEY` is the new-format secret key (`sb_secret_…`), not the
+legacy JWT every script here uses. `push-sweep`'s identical check had been silently
+unpassable since 15 Sep; nobody noticed because nothing has ever called it.
 
 ---
 
-## 5. Open questions, re-pointed
+## 4. The review, same day
 
-Sola's four questions are superseded for build purposes by §4. These remain worth
-answering, and two are for Sola rather than Paul:
+Reading both sessions back against Sola's note and the live database turned up three
+gaps. All three are fixed.
 
-1. **For Sola** — what is "Passport stamps" and what does it compute from? It's named as
-   the foundation challenges tie into, and no such table, column, function or doc exists
-   in this repo.
-2. **For Sola** — are the on-device release reminders live in the shipped build? If so
-   they are already firing on placeholder dates today.
-3. **For whoever owns the seed** — was `release_tbd` ever wired, or has it always been
-   decorative?
-4. **Deferred** — whether Events eventually holds more than one of the three. The first
-   one shapes what "Events" means to a user opening it cold.
+### 4a. `release_precision` was returned by nothing
+
+The column shipped, the backfill ran — and `shelf_catalog_row` never carried it, so
+`/search`, `/games/:id`, `/games/popular`, `/roulette` and the rest all still handed
+the app a bare `release_date`. Both stated reasons for the column live *in the app*:
+
+- making Paul's "Upcoming" filter honest, and
+- stopping the app's **on-device** reminders (`reminders.ts`) firing on 31-Dec
+  placeholders — a path that never touches the backend at all.
+
+A column the app cannot read fixes neither. Worse, `technical-notes-for-sola.md` had
+already told Sola *"every CatalogGame's release_date now sits next to
+releasePrecision"*, which was true of the catalog and false of the API.
+
+**Fix — `20260917150000_catalog_release_precision.sql`:** the attribute added to the
+`shelf_catalog_row` composite type and returned by all five catalog functions
+(`shelf_search_games`, `shelf_popular_games`, `shelf_roulette`,
+`shelf_recently_viewed`, `shelf_popular_with_friends`), plus `/games/:id`'s own column
+list, plus `releasePrecision` on the `CatalogGame` type. It lands **last** in the row
+because `alter type … add attribute` appends and reordering would mean dropping the
+type and all three functions that return it; PostgREST serialises by name, so the
+position is cosmetic. Add future catalog columns the same way.
+
+### 4b. The Events screen had no list
+
+Session B built the per-game half — a toggle on `/games/:id`, a notification on
+release day — and nothing that returns *the games a user watches*. Sola's note
+describes the screen as "a date-sorted list of upcoming releases".
+
+The app *can* read `game_watches` through PostgREST — that is why there's no toggle
+endpoint — but a watch row is only `(user_id, game_id, created_at)`, so rendering it
+means joining `games` client-side, and a `games` row fetched that way has no
+`abbreviation` and no `colorKey`: both are derived in `toCatalogGame()` and stored
+nowhere. `GameCover.tsx` resolves a missing `colorKey` as `coverColors[colorKey] ??
+coverColors.slate`, so every cover on the Events screen would have rendered the same
+grey, with no error on either side. **That exact drift has already cost this project
+once** (see the note in `_shared/catalog-game.ts`).
+
+**Fix — `shelf_watched_games` behind `GET /games/watching`:** full `CatalogGame`s so
+the existing game-row component renders them unchanged, plus `watchedAt` and
+`watcherCount`. Ordering is the server's — upcoming first, soonest first; undated
+games sort with them; already-released ones fall below, most recent first, so a watch
+doesn't vanish the morning it ships.
+
+**Deliberately not built: an "everything releasing this month" feed.** §1c is why. A
+curation gate — followed franchise, wishlisted, owned platform, or a hand-maintained
+flag — is an open product question, and `/games/watching` needs none of it because
+the user chose every row in it.
+
+### 4c. A missed sweep meant a permanently missed release
+
+`release_date = current_date` exactly is correct only if the sweep runs on every
+single calendar day, forever. It has never run on any: **`pg_cron` is not installed
+on this project**. One missed run — an outage, or simply the day the schedule is
+finally switched on — and every watcher of that day's releases is silently owed a
+bell that can never arrive.
+
+**Fix:** a 2-day trailing window, safe only because `notifications_dedupe` collapses
+to `(user_id, kind, game_id)` for this kind. Two days rather than a week because the
+first run after the schedule goes live notifies for everything inside the window, and
+"out in the last couple of days" is still true where "out last week" reads as a bug.
+
+### Smaller things, same pass
+
+| | |
+|---|---|
+| `/games/:id` swallowed the error from its own `game_watches` read | A failed read rendered as `watching: false` — indistinguishable from "not watching", so the toggle showed off and the next tap would 23505 against a row that exists. Both errors checked now. |
+| The Sola notes showed `shelf_challenges` returning camelCase | Wrong for an RPC, and contradicted that doc's own §1: PostgREST returns the row as stored and supabase-js converts nothing. Corrected to `start_date` / `end_date` / `my_progress`. |
+| "21 unresolved" in the Sola notes | 23. |
+| `releasePrecision`'s docstring had displaced `coverUrl`'s | Inserted between an existing doc comment and its function in `_shared/igdb.ts`. Reattached. |
 
 ---
 
-Measured 17 Sep 2026 against the live project via service-role reads. Catalog state:
-91,806 games (post-widening, 15 Sep). All paging done with an explicit `.order()` —
-an unordered `.range()` over this table reads a different slice each run.
+## 5. Verified, against the live project
+
+Everything below ran after the fixes, against the deployed functions and the real
+database — not a local stack.
+
+| Suite | Result |
+|---|---|
+| `npm run verify:game-watches` | **all passed** — RLS both directions, anon locked out, `watcher_count` as a true cross-user aggregate, the deployed `/games/:id` (`watching`, `watcherCount`, `releasePrecision`), the new `/games/watching` (catalog shape incl. `abbreviation`/`colorKey`, `watchedAt`, per-user isolation), the sweep's 401s, its `release_precision='day'` guard, the trailing window catching yesterday's release, idempotency on a second run, the client's inability to forge a notification, and the push batch carrying `game_release` rows |
+| `npm run verify:challenges` | **all passed** — criteria CHECK (including the missing-key case), the `finished_at` trigger in both directions, per-user progress, status math, RLS and grants |
+| `verify:roulette`, `verify:recently-viewed`, `verify:search-filters`, `verify:friends-popular`, `verify:functions` | **all passed** — the catalog surfaces that the composite-type change touched |
+| `npm run typecheck` | clean |
+| Grants re-checked after every `create or replace` | no `anon` on any of the seven functions |
+
+Live state as of this document: 91,806 games · 1 seasonal challenge · 0 real watches ·
+0 `game_release` notifications ever written (see §6.1).
+
+---
+
+## 6. What is still open
+
+**1 — Nothing schedules the sweep.** `pg_cron` is not installed. Until someone wires
+it by hand (the pattern is in `docs/research/push-notifications.md`; the schedule is
+deliberately not in a migration, because that would put a service-role key into a
+file in git), the Release-Day Tracker writes nothing, ever. **Use the new-format
+secret key**, not the legacy `service_role` JWT. Same unfinished step as `push-sweep`
+and `vague-search-sweep`.
+
+**2 — Push delivery is still blocked on Josh** — APNs `.p8` and FCM service-account
+JSON, which OneSignal requires and does not replace. The bell rings without it; the
+push does not.
+
+**3 — Two questions for Sola**, both in the notes doc:
+- **Are the on-device release reminders live in the shipped build?** They schedule
+  from `release_date` with no precision check, so today they fire on placeholder
+  dates through a path that never touches the backend. `releasePrecision` is now in
+  every `CatalogGame` specifically so they can be gated.
+- **What is "Passport stamps"?** Named in his note as what challenges tie into. No
+  such table, column, function or doc exists on the backend.
+
+**4 — Season two is a row and a re-run**, by design. Note that "October Horror
+Challenge" — Sola's own example — is **not representable yet**: IGDB files Horror
+under `games.themes`, not `games.genres`, and `shelf_challenges()` matches only
+genres. Widening the criteria shape is a small, deliberate change, not done on spec.
+
+**5 — The curation gate** for any upcoming-releases *browse*, as opposed to "games I
+watch", is undecided and unassigned.
+
+**6 — Community Meetup** remains parked, and the reason is unchanged: it is the only
+one of the three that lets users publish content other users read.
+
+---
+
+## 7. What this cost, and what it bought
+
+The build is one day. The thing worth keeping is the shape of what went wrong twice,
+in the same direction both times: **a value that exists but is never read.**
+`release_tbd` populated on 2 of 91,806 rows. `hours` on roulette, inert. A dedupe
+column that would have been silently dropped by an inner join. A precision column
+backfilled across 91,804 rows and returned by nothing — written the same day as the
+doc bullet asserting it was already reaching the app.
+
+Each was invisible to anything that only reads the code, and obvious the moment
+something asked the live system a question. The verify suites are how that question
+gets asked more than once.

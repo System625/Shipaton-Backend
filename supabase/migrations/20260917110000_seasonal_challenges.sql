@@ -1,5 +1,5 @@
 -- Seasonal Challenge Tracker. Session A of the Events screen build (decision taken
--- 17 Sep 2026, research/events-screen.md §4) -- team-authored, hand-written per
+-- 17 Sep 2026, research/events-screen.md §2) -- team-authored, hand-written per
 -- season. No creation UI, no admin endpoint, no moderation surface: a challenge is
 -- authored by inserting a row directly (see scripts/seed-challenges.ts for the
 -- season-one example). That answers Sola's "who authors a challenge" question for

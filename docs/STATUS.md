@@ -1586,6 +1586,56 @@ users publish content other users see (a `location text` other people would read
 which needs its own deliberate safety call, not one made as a side effect of
 picking an Events direction.
 
+**Reviewed both sessions the same day, and three things were missing.** All three
+are now fixed (`20260917150000`, `20260917160000`):
+
+1. **`release_precision` was returned by nothing.** The column shipped, the backfill
+   ran, and `shelf_catalog_row` never carried it — so `/search`, `/games/:id`,
+   `/games/popular`, `/roulette` and the rest all still handed the app a bare
+   `release_date`. Both stated reasons for the column (an honest "Upcoming" filter,
+   and stopping the app's *on-device* reminders firing on 31-Dec placeholders) live
+   in the app, so a column the app cannot read fixed neither, and
+   `technical-notes-for-sola.md` had already told Sola it was there. The attribute
+   is now on `shelf_catalog_row` (appended — reordering means dropping the type and
+   all three functions that return it) and all five catalog functions return it.
+2. **The Events screen had no list.** Session B built the per-game half — a toggle on
+   `/games/:id`, a notification on release day — and nothing that returns the games
+   a user watches. The app *can* read `game_watches` through PostgREST, but joining
+   `games` client-side loses `abbreviation` and `colorKey`, which are derived in
+   `toCatalogGame()` and stored nowhere: every cover would render the same grey,
+   silently. Now `shelf_watched_games` behind **`GET /games/watching`**, catalog-
+   shaped like the other three list routes, plus `watchedAt`/`watcherCount`.
+   Deliberately still NOT an "everything releasing this month" feed — §1 of the
+   research doc measured why that can't ship (nothing upcoming can be ranked), and
+   what curates it is an open product question, not a build task.
+3. **A missed sweep meant a permanently missed release.** `release_date =
+   current_date` exactly is only correct if the sweep runs every single calendar
+   day, and it has never run on any. Now a 2-day trailing window, which is safe only
+   because `notifications_dedupe` collapses to `(user_id, kind, game_id)` for this
+   kind — one bell per watcher per game no matter how many runs see it.
+
+Also fixed in the same pass: `/games/:id` swallowed the error from its own
+`game_watches` read (a failed read rendered as `watching: false`, so the next tap
+would 23505 against a row that exists); `technical-notes-for-sola.md` §13 showed the
+`shelf_challenges` payload in camelCase, which is wrong for an RPC and contradicted
+its own §1 (PostgREST returns the row as stored — supabase-js converts nothing); and
+`releasePrecision`'s docstring had displaced `coverUrl`'s in `_shared/igdb.ts`.
+
+**Still needed for Events, and none of it is backend code:**
+1. **Wire the `game-release-sweep` schedule** the same by-hand way `push-sweep`'s and
+   `vague-search-sweep`'s are documented (`docs/research/push-notifications.md`) —
+   deliberately not in a migration. **Use the NEW-format secret key**, not the legacy
+   `service_role` JWT; see Traps. Until this is done the tracker writes nothing, ever.
+2. **Tell Sola.** `technical-notes-for-sola.md` §14 is written and covers the watch
+   table, `/games/watching`, the `game_release` notification shape and the null-actor
+   branch his renderer needs.
+3. **Season two's challenges** are a row in `scripts/seed-challenges.ts` and a re-run,
+   by design. "October Horror Challenge" is *not* representable yet: IGDB files Horror
+   under `games.themes`, not `games.genres`, which `shelf_challenges()` doesn't match.
+4. **The curation gate** for any upcoming-releases *browse* (as opposed to "games I
+   watch") is still undecided — followed franchise, wishlisted, owned platform, or a
+   hand-maintained flag. Open product question, unassigned.
+
 ---
 
 ## Traps
