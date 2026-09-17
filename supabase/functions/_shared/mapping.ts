@@ -9,6 +9,7 @@
 import {
   coverUrl,
   igdbQuery,
+  releasePrecision,
   timeToBeatQuery,
   type IgdbCredentials,
   type IgdbGame,
@@ -23,6 +24,7 @@ export type GameUpsert = {
   match_title: string; // overwritten by the games_match_title trigger; sent for clarity
   release_date: string | null;
   release_tbd: boolean;
+  release_precision: "day" | "month" | "quarter" | "year" | null;
   cover_url: string | null;
   genres: string[];
   // Descriptive text. See migration 20260911120000_descriptive_fields.sql for
@@ -86,6 +88,7 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
       ? new Date(game.first_release_date * 1000).toISOString().slice(0, 10)
       : null,
     release_tbd: !game.first_release_date,
+    release_precision: releasePrecision(game),
     cover_url: coverUrl(game.cover?.image_id),
     genres,
     // IGDB omits these rather than sending empty, so every one needs a fallback.

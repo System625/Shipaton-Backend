@@ -104,6 +104,15 @@ export type IgdbGame = {
   // Abbreviations, regional titles and alternate spellings. Written to
   // game_alt_titles, not to a column on games.
   alternative_names?: { name: string }[];
+  // One row per platform/region a release was announced for -- NOT one per game.
+  // `date` matches `first_release_date` on whichever row IGDB picked as earliest;
+  // see releasePrecision(). Verified live 17 Sep 2026: there is no `category` field
+  // on the current API despite that name appearing in older docs and in
+  // research/events-screen.md -- the real field is `date_format`. IGDB accepts
+  // `category` in a query without erroring (unlike a truly unknown field, which 400s)
+  // but returns nothing for it, so a caller that used it would get `date_format:
+  // undefined` on every row and never notice.
+  release_dates?: { date?: number; date_format?: number; platform?: number }[];
 };
 
 export type IgdbTimeToBeat = {
@@ -138,12 +147,19 @@ export type IgdbPlatform = {
 // they do enlarge the response: summary alone is a median 740 chars on rated games,
 // so seed pages of 500 get meaningfully heavier. If the seed starts timing out,
 // drop the page size before dropping fields.
+// `release_dates.date/date_format/platform` were added 17 Sep 2026 for
+// releasePrecision() -- see the migration this backs, 20260917_release_precision.
+// Sub-field expansion costs nothing extra per request (Apicalypse charges per
+// request, not per field, same as the descriptive-fields addition on 11 Sep) but
+// this one DOES enlarge the response more than most: a game with releases across
+// eight platforms carries eight release_dates rows.
 export const GAME_FIELDS =
   "fields name, slug, first_release_date, cover.image_id, genres.name, platforms, " +
   "aggregated_rating, total_rating_count, game_modes.name, keywords.name, " +
   "summary, storyline, themes.name, player_perspectives.name, " +
   "game_type, parent_game, " +
-  "version_parent, alternative_names.name;";
+  "version_parent, alternative_names.name, " +
+  "release_dates.date, release_dates.date_format, release_dates.platform;";
 
 /**
  * Search IGDB. Filters to main games only — without `game_type = 0`, "Elden Ring"
@@ -311,6 +327,40 @@ export function timeToBeatQuery(gameIds: number[]): string {
  * not upscale, so treat 3:4 as reliable but not guaranteed. 264x374 would be
  * 0.706 — a frame built to it letterboxes every cover in the app.
  */
+/**
+ * Derives day/month/quarter/year precision for `first_release_date` from the
+ * matching `release_dates` row's `date_format` (0=day, 1=month, 2=year, 3-6=a
+ * quarter, 7=TBD). A game can carry several release_dates rows -- one per platform
+ * -- so this picks the one whose `date` equals `first_release_date`, which is the
+ * row IGDB itself used to derive that scalar field (verified live 17 Sep 2026:
+ * every sampled game's matching row shares that exact unix-second value).
+ *
+ * Returns null when there is nothing to derive from: no `first_release_date`
+ * (release_tbd already covers that case), or -- unobserved in testing but not
+ * provably impossible -- no release_dates row matches it.
+ */
+export function releasePrecision(
+  game: IgdbGame,
+): "day" | "month" | "quarter" | "year" | null {
+  if (game.first_release_date == null) return null;
+  const match = (game.release_dates ?? []).find((rd) => rd.date === game.first_release_date);
+  switch (match?.date_format) {
+    case 0:
+      return "day";
+    case 1:
+      return "month";
+    case 2:
+      return "year";
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+      return "quarter";
+    default:
+      return null; // 7 (TBD), undefined, or no matching row
+  }
+}
+
 export function coverUrl(imageId: string | undefined): string | null {
   if (!imageId) return null;
   return `https://images.igdb.com/igdb/image/upload/t_cover_big_2x/${imageId}.jpg`;

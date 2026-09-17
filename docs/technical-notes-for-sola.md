@@ -888,3 +888,94 @@ completely made-up title can never appear), a *wrong* answer still comes back as
 real, existing game — never gibberish, never a 404. That's deliberate and it's why
 the confidence number matters more here than it would somewhere the model can simply
 decline to answer.
+
+---
+
+## 13. New (17 Sep): Seasonal Challenges, and a catalog date-precision fix
+
+Session A of the Events screen build. `research/events-screen.md` measured that the
+"Release-Day Tracker" you and Paul leaned toward is the cheapest schema and the most
+expensive *data* — the catalog's upcoming release dates are mostly placeholders, and
+Seasonal Challenge's data (library completions + genres) was already sitting there,
+unused. Decided internally by Josh, not routed to Paul as a product call. Release-Day
+is Session B, once this data fix has landed — building it before this would mean
+building it twice.
+
+### Seasonal Challenge Tracker — live
+
+```
+rpc('shelf_challenges')
+```
+
+Every challenge, with your progress against it:
+
+```jsonc
+[
+  {
+    "id": "…",
+    "title": "Beat 3 RPGs This Month",
+    "description": "Finish three Role-playing games between 1 and 31 October to complete this challenge.",
+    "startDate": "2026-10-01",
+    "endDate": "2026-10-31",
+    "criteria": { "genres": ["Role-playing (RPG)"], "count": 3 },
+    "status": "upcoming",              // "active" | "upcoming" | "ended", computed server-side
+    "myProgress": { "count": 0, "target": 3 }
+  }
+]
+```
+
+(Field names above are camelCase as the app will see them through supabase-js; the
+column names in Postgres are snake_case, same as everywhere else.)
+
+- **Team-authored only.** No creation UI, no admin endpoint — a challenge is a row,
+  written by `scripts/seed-challenges.ts` on our side. That answers "who authors a
+  challenge" for season one without committing to anything about season two.
+- **Returns every challenge, active/upcoming/ended alike** — same choice as
+  `shelf_recently_viewed`: the RPC hands you the full shape, the screen decides what
+  to render. Your note showed "a list of active/upcoming challenges" — filter on
+  `status` client-side.
+- **`myProgress.count`** only counts a game if it's `beaten` AND finished inside
+  `[startDate, endDate]` AND its genres overlap `criteria.genres`. One real bug this
+  closed: 2 library rows had a `finishedAt` set while their status was NOT `beaten` —
+  a live disagreement the research doc measured. A new database trigger keeps the two
+  in sync from now on: moving a game to `beaten` sets `finishedAt` if it isn't already
+  set, and moving it *off* `beaten` clears it. If your app has any code that reads
+  `finishedAt` independent of `status`, it can now trust that pairing.
+- **`criteria.genres` is IGDB's genre strings** (`"Role-playing (RPG)"`, `"Shooter"`,
+  not display labels) — match `games.genres` exactly if you ever render criteria
+  yourself. **`Indie` matches 56% of the catalog (51,512 of 91,806 games)** — worth
+  knowing before anyone reaches for it as a challenge filter.
+- **"October Horror Challenge" (your other worked example) doesn't fit this shape
+  yet.** IGDB files "Horror" under *themes*, not *genres* — `games.themes`, a
+  different column, which `shelf_challenges()` doesn't currently match against.
+  Season one shipped with the RPG example, which is a genre. Say the word if a
+  theme-based challenge is wanted and I'll widen the criteria shape.
+- **No join/participant mechanic.** Your note marked `participant_count` optional
+  ("only if challenges are joinable") — not built, since nothing asked for it yet.
+
+### Catalog fix: `release_date` now carries a precision
+
+Corrects a claim in `research/events-screen.md` itself: it said the seed already
+fetched the field this depends on and just wasn't using it. Checked against live
+IGDB before building — that field (`release_dates.category` in older docs and in
+that draft) doesn't exist on the current API; the real one is `release_dates.date_format`,
+and it was not being fetched anywhere in this repo until today.
+
+Every `CatalogGame`'s `release_date` now sits next to `releasePrecision`:
+`"day" | "month" | "quarter" | "year" | null`. `null` means either genuinely unknown
+(`releaseTbd: true`) or the rare unmatched row (21 of them, listed in the backfill
+log). **Only trust a release date as day-accurate if `releasePrecision === "day"`.**
+
+Measured on the live catalog after the backfill:
+- Whole catalog (91,781 dated games): 86,194 day, 1,439 quarter, 1,007 month, 3,141
+  year.
+- **Just the upcoming 3,748: 83.5% are NOT day-precise** (617 day, 876 quarter, 159
+  month, 2,086 year, 10 unresolved) — confirms the research doc's original 80.4%
+  estimate, now against real IGDB precision data instead of inferred from date
+  patterns like "31 Dec".
+- This is exactly why Release-Day (Session B) waited on this fix: a day-of
+  notification built on the old data would have been wrong four times in five.
+- **Not yet wired into the "Upcoming" search filter or the on-device release
+  reminders** (`src/services/notifications/reminders.ts`) — both still read the raw
+  `release_date` with no precision check. That's the next place this should land;
+  raising it here so it doesn't get lost as "already fixed" when it's only half fixed.
