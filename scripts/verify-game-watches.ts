@@ -205,7 +205,7 @@ async function main() {
     const { data: batch, error: batchError } = await admin.rpc("shelf_next_push_batch", { p_limit: 500 });
     if (batchError) throw new Error(`shelf_next_push_batch: ${batchError.message}`);
     const batchRows = (batch ?? []) as any[];
-    const aliceBatchRow = batchRows.find((r) => r.id === aliceRelease.id);
+    const aliceBatchRow = aliceRelease && batchRows.find((r) => r.id === aliceRelease.id);
     check("alice's game_release notification is in the batch, not dropped by the join",
       !!aliceBatchRow, `${batchRows.length} row(s) in batch`);
     check("it carries the game title, with no actor to name",

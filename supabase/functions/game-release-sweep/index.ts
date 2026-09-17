@@ -28,14 +28,25 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return errorResponse("method not allowed", 405);
 
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  if (req.headers.get("Authorization") !== `Bearer ${serviceKey}`) {
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const authHeader = req.headers.get("Authorization");
+  if (authHeader !== `Bearer ${serviceKey}`) {
+    // TEMPORARY, until this is confirmed working: this exact bearer check is
+    // copied from push-sweep, and verify-game-watches.ts just became the FIRST
+    // real call to either sweep with an actual service-role bearer -- push-sweep's
+    // own version of this check has never been exercised for real either (pg_cron
+    // is still unwired). Lengths only, never the values, so this is safe to leave
+    // in server logs.
+    console.error(
+      `sweep auth mismatch: header present=${authHeader != null} len=${authHeader?.length ?? 0}; ` +
+      `SUPABASE_SERVICE_ROLE_KEY set=${serviceKey != null} len=${serviceKey?.length ?? 0}`,
+    );
     return errorResponse("this endpoint is for the scheduled sweep only", 401);
   }
 
   const admin = createClient(
     Deno.env.get("SUPABASE_URL")!,
-    serviceKey,
+    serviceKey!,
   );
 
   const { data, error } = await admin.rpc("shelf_sweep_game_releases");
