@@ -16,9 +16,14 @@ Every status code and payload below was captured from the live project today, no
 written from the source.
 
 **Base URL for edge functions:** `https://sbunhrxwhraigwpidbxk.supabase.co/functions/v1`
-**Full reference:** `docs/openapi.yaml` in the backend repo, and the Shelf API Reference
-page. The wishlist isn't in either yet, so section 2 of this file is its reference for
-now.
+**Full reference:** `docs/openapi.yaml` in the backend repo, for edge functions. There is
+no separate published API reference page anymore — that artifact kept getting shared at
+a stale pinned version and truncated when pasted as text, so as of 18 Sep everything
+gets sent from the repo instead. `openapi.yaml` documents edge functions only;
+PostgREST tables and RPCs (wishlist, friend discovery, and everything else called via
+`supabase.from()` / `.rpc()`) are logged here, one dated section per feature. A feature
+big enough that reading this whole file to reach it would be a cost of its own — the
+first is onboarding — gets its own file instead, linked from the table below.
 
 ---
 
@@ -41,6 +46,7 @@ Everything on the backend is live and verified. What's left is app wiring.
 | Share a link | `POST /share-resolve`, `POST /share-confirm` | Not wired, no `expo-share-intent` yet. Section 5 |
 | **Finish card** | **Nothing — no endpoint, no migration** | **Blocked on three columns missing from your select. Section 7** |
 | **Vague search** | **`POST` / `GET /vague-search`** | **Built 16 Sep, not deployed yet. Nothing to wire until it is — read section 12 now so the screen can be designed ahead of it** |
+| **Onboarding steps 4 & 5** | **PostgREST: `profiles.platforms`, `shelf_suggested_users`** | **New 18 Sep, not wired. Own doc: `docs/onboarding-for-sola.md`** |
 
 Two conventions that hold everywhere:
 
@@ -1082,3 +1088,12 @@ in your renderer:
   `CatalogGame` specifically so that can be gated client-side.
 - **What is "Passport stamps"?** Named in your note as what challenges tie into.
   There is no passport or stamp table, column, function or doc on the backend.
+
+---
+
+## 15. Onboarding steps 4 & 5 — see the dedicated doc
+
+Shipped 18 Sep. This one has its own file so you don't have to read this whole
+document to get to it: **`docs/onboarding-for-sola.md`** — the `profiles.platforms`
+write path, the `shelf_suggested_users` contract, and the open questions logged for
+your answer.

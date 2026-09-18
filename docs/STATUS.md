@@ -1,6 +1,6 @@
 # Shelf backend — where things stand
 
-**Last updated 17 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
+**Last updated 18 September 2026.** Ship deadline **30 Sep 2026, 11:45pm PDT**;
 judging runs to **22 Oct**.
 
 **The app is called Prysm.** Settled 14 Sep. "Shelf" survives as the internal name
@@ -55,14 +55,30 @@ direct join with no OAuth at all (§ account linking, "Still open here"). The Ev
 screen (§17) went from a lopsided proposal — Sola's cheapest candidate turned out to
 have the most broken data — to two shipped, verified sessions in one day: a
 date-precision fix plus a hand-authored Seasonal Challenge Tracker, then the
-Release-Day Tracker those data fixes made honest to build. **What is left across the
-whole project, in priority order: an actual human test of the already-built Xbox
-linking flow (nothing else blocks it); OneSignal/APNs/FCM credentials from Josh for
-push delivery; PlayStation and Grouvee linking (not started); and two things blocked
-on Paul/product decisions (onboarding account recommendations, vague search's
-"no confident answer" UI).** Community Meetup, the Events screen's third candidate,
-is deliberately parked — the only one of the three that lets users publish content
-other users see, and that safety call should not ride along inside this sprint.
+Release-Day Tracker those data fixes made honest to build. Community Meetup, the
+Events screen's third candidate, is deliberately parked — the only one of the three
+that lets users publish content other users see, and that safety call should not
+ride along inside this sprint.
+
+**18 Sep: onboarding steps 4 & 5 shipped.** This was never actually blocked on
+Paul — Sola's note (`task.md`, 16 Sep) hands the ranking to the backend explicitly,
+and `Prysm - Onboarding.pdf` names the metrics, so the "blocked on Paul" line below
+was wrong and is now corrected. Two migrations: `profiles.platforms` (step 4's
+device multi-select — no policy change, the existing own-row `.update()` just
+starts writing it) and `shelf_suggested_users` (step 5's "meet players like you"
+list — SECURITY DEFINER over the owner-only `library_entries`, a deliberate,
+decided widening of the shelf-privacy line to return games-in-common, library
+size and hours alongside the usual profile columns). Pushed and verified live —
+`npm run verify:onboarding`, all checks passed. Everything — the app contract and the
+reasoning behind it — is one file: `docs/onboarding-for-sola.md`, not a section of
+`technical-notes-for-sola.md`, so Sola doesn't have to read the whole running log to
+reach it.
+
+**What is left across the whole project, in priority order: an actual human test
+of the already-built Xbox linking flow (nothing else blocks it); OneSignal/APNs/FCM
+credentials from Josh for push delivery; PlayStation and Grouvee linking (not
+started); and one thing blocked on Paul (vague search's "no confident answer"
+UI).**
 
 ---
 
