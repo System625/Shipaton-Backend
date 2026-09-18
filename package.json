@@ -45,7 +45,10 @@
     "lab:eval": "tsx scripts/search-lab/run-eval.ts",
     "lab:embed-gte": "tsx scripts/search-lab/embed-corpus-gte.ts",
     "lab:embed-voyage": "tsx scripts/search-lab/embed-corpus.ts",
-    "lab:vague": "tsx scripts/search-lab/run-vague-eval.ts"
+    "lab:vague": "tsx scripts/search-lab/run-vague-eval.ts",
+    "qv:assets": "tsx scripts/quickview-lab/measure-assets.ts",
+    "qv:ratios": "tsx scripts/quickview-lab/measure-ratios.ts",
+    "qv:videos": "tsx scripts/quickview-lab/measure-videos.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
