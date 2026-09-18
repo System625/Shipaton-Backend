@@ -72,8 +72,88 @@ const secondsToHours = (s: number | undefined): number | null => {
   return hours > TTB_MAX_PLAUSIBLE_HOURS ? null : hours;
 };
 
+// THE 1000h GUARD ABOVE ONLY CATCHES THE ABSURD. It does not catch merely wrong,
+// and merely wrong is what reaches the screen: on 18 Sep 2026 the live detail screen
+// for Grand Theft Auto: Vice City read "135h to beat" (a ~30h game), off a row whose
+// own numbers contradict each other —
+//
+//   ttb_hastily 876.0   ttb_normally 134.6   ttb_completely 181.8   ttb_count 13
+//
+// 876 < 1000, so it passed. But `hastily` cannot exceed `completely`: they are the
+// same quantity measured three ways, so `hastily <= normally <= completely` is a
+// property the triple MUST have, and a triple that breaks it is not partially wrong,
+// it is untrustworthy. Once the ordering is broken there is no way to tell from the
+// data which of the three is the bad submission — Vice City's `hastily` is the
+// obvious outlier, but `normally` is wrong too, and nothing in the row says so.
+//
+// WHY A TOLERANCE RATHER THAN A STRICT `<=`. Measured across the 5,994 catalog rows
+// carrying any time-to-beat: 298 break the ordering at all, but most break it by
+// noise. Wolfenstein: The New Order reports hastily 13.0 against normally 12.2 off
+// 24 submissions; The Last of Us Part I 19.5 against 19.0 off 20. Those are crowd
+// medians disagreeing in the last digit and `normally` is perfectly usable. A strict
+// comparison would throw away all of them. Counts at each threshold:
+//
+//   > 0%    298 rows      > 25%   153 rows      > 100%   56 rows
+//   > 10%   241 rows      > 50%    97 rows
+//
+// 25% is the knee, and it is chosen against named games rather than by eye: it keeps
+// Wolfenstein (1.066), CoD 4 (1.033), Metro 2033 (1.029), GTA IV (1.094) and
+// San Andreas (1.083), and drops Vice City (6.508), Overwatch (32.420 — 810h to beat
+// "normally" against 25h completely), Super Mario Bros. (5.905), Fallout 2 (2.600),
+// Crysis (2.196) and Metal Gear Solid (1.803). Tune it here; nothing else reads it.
+//
+// `ttb_count` goes with them. It is the submission count behind the three values, so
+// keeping it beside three NULLs would describe evidence that is no longer there.
+//
+// NOT FIXED BY THIS, and worth knowing before trusting any of these numbers:
+// 57.7% of the catalog's surviving `normally` values (2,947 of 5,106) rest on a
+// SINGLE submission and 84.0% on three or fewer, and the app shows the figure with
+// no sample size next to it. That is a product question,
+// not a data-quality one — see docs/research/quick-view-card.md §7.
+const TTB_ORDER_TOLERANCE = 1.25;
+
+type TtbTriple = {
+  hastily: number | null;
+  normally: number | null;
+  completely: number | null;
+  count: number | null;
+};
+
+/**
+ * Applies the ordering check above. Pairs are only compared when both sides are
+ * present — a missing `completely` is the normal case, not a contradiction — and a
+ * zero or negative reading is treated as contradictory rather than dividing by it.
+ */
+export function guardTtbOrder(triple: TtbTriple): TtbTriple {
+  const { hastily, normally, completely } = triple;
+  const pairs: [number | null, number | null][] = [
+    [hastily, normally],
+    [normally, completely],
+    [hastily, completely],
+  ];
+
+  for (const [lower, upper] of pairs) {
+    if (lower == null || upper == null) continue;
+    if (upper <= 0 || lower / upper > TTB_ORDER_TOLERANCE) {
+      return { hastily: null, normally: null, completely: null, count: null };
+    }
+  }
+  return triple;
+}
+
 export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): GameUpsert {
-  const ttbNormally = secondsToHours(ttb?.normally);
+  // The ordering check runs on the CONVERTED values, after the 1000h guard, so a
+  // reading that is nulled for being absurd cannot then make its siblings look
+  // contradictory. `ttbNormally` is read again below by deriveSessionFit, so it has
+  // to be the guarded value — otherwise a row could be filed as "low" on a number
+  // the same mapper just decided not to store.
+  const ttbHours = guardTtbOrder({
+    hastily: secondsToHours(ttb?.hastily),
+    normally: secondsToHours(ttb?.normally),
+    completely: secondsToHours(ttb?.completely),
+    count: ttb?.count ?? null,
+  });
+  const ttbNormally = ttbHours.normally;
   const genres = (game.genres ?? []).map((g) => g.name);
   // Computed once: deriveSessionFit() reads these, and now so does the row itself.
   const keywordNames = (game.keywords ?? []).map((k) => k.name);
@@ -111,10 +191,10 @@ export function mapIgdbGame(game: IgdbGame, ttb: IgdbTimeToBeat | undefined): Ga
     // row this mapper touches was fetched, so it always writes a real count.
     total_rating_count: game.total_rating_count ?? 0,
     igdb_game_type: game.game_type ?? null,
-    ttb_hastily_hours: secondsToHours(ttb?.hastily),
-    ttb_normally_hours: ttbNormally,
-    ttb_completely_hours: secondsToHours(ttb?.completely),
-    ttb_count: ttb?.count ?? null,
+    ttb_hastily_hours: ttbHours.hastily,
+    ttb_normally_hours: ttbHours.normally,
+    ttb_completely_hours: ttbHours.completely,
+    ttb_count: ttbHours.count,
     session_fit: deriveSessionFit({
       genres,
       gameModes,
