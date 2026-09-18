@@ -40,6 +40,17 @@ export type CatalogGame = {
   genres: string[];
   coverImageUrl?: string;
   timeToBeatHours?: number;
+  /**
+   * How many people submitted a playthrough behind `timeToBeatHours`. Render it
+   * beside the hours -- Paul, 18 Sep 2026: `12 hrs (2)` when space is tight.
+   *
+   * SHOW IT WHENEVER YOU SHOW THE HOURS. 2,929 of the 4,954 games that have a
+   * time (59.1%) rest on a SINGLE submission, so an unqualified number is one
+   * stranger's playthrough presented as fact. A threshold was considered and
+   * rejected: hiding anything under 3 submissions drops 76% of the times we
+   * hold, under 5 drops 89%. See docs/STATUS.md, "Decided 18 Sep".
+   */
+  timeToBeatCount?: number;
   sessionFit?: "high" | "medium" | "low";
   criticScore?: number;
   abbreviation: string;
@@ -111,6 +122,7 @@ export function toCatalogGame(row: CatalogRow): CatalogGame {
     genres: row.genres ?? [],
     coverImageUrl: row.cover_url ?? undefined,
     timeToBeatHours: ttb,
+    timeToBeatCount: row.ttb_count ?? undefined,
     sessionFit: row.session_fit ?? undefined,
     criticScore: row.critic_score ?? undefined,
     abbreviation: deriveAbbreviation(row.title),

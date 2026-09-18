@@ -855,14 +855,30 @@ function's own comment explains why — it needs the service role key in Vault f
 `pg_net`). None of this can happen without the user; see the repo's own note on
 that.
 
-**Run this once, by hand, via the Supabase SQL editor — after `DEEPSEEK_API_KEY` is
-set as a function secret** (same shape as `docs/research/push-notifications.md`'s
-pg_cron snippet for `push-sweep`):
+**DONE 18 Sep 2026 — this section is now a record, not a to-do.** What follows is
+what was actually run, with two corrections to what this section used to claim.
+
+**Correction 1: the extensions were NOT installed.** This block used to open with a
+comment saying pg_cron, pg_net and supabase_vault were already installed, "confirmed
+by push-sweep's existing schedule". Checked live 18 Sep: only `supabase_vault` was
+installed, and **`cron.job` was completely empty — push-sweep had no schedule, and
+never had one.** The comment inferred an installed extension from a schedule that
+did not exist. The user enabled `pg_cron` 1.6.4 and `pg_net` 0.20.4 by hand on
+18 Sep, which is what unblocked everything below.
+
+**Correction 2: one Vault secret now serves all three sweeps.** The secret created
+is named `vague_search_sweep_service_key`, and `push-sweep` and `game-release-sweep`
+reference that same name rather than the `push_sweep_service_key` that
+`docs/research/push-notifications.md` describes. One key, three schedules — the name
+is narrower than the job it does, so do not read it as vague-search-only.
+
+Run once, by hand, via the Supabase SQL editor, after `DEEPSEEK_API_KEY` is set as a
+function secret. The key pasted here must be the **NEW-format secret key**
+(`sb_secret_…`), not the legacy `service_role` JWT — see
+`docs/research/push-notifications.md` for why that distinction has bitten twice:
 
 ```sql
--- pg_cron, pg_net and supabase_vault are already installed on this project
--- (confirmed by push-sweep's existing schedule).
-select vault.create_secret('<paste the service role key>', 'vague_search_sweep_service_key');
+select vault.create_secret('<paste the NEW-format secret key>', 'vague_search_sweep_service_key');
 
 select cron.schedule(
   'vague-search-sweep',
@@ -880,7 +896,54 @@ select cron.schedule(
 );
 ```
 
-To stop it: `select cron.unschedule('vague-search-sweep');`.
+The other two sweeps were scheduled in the same sitting, against the same secret,
+because they were in the identical state — deployed since 15 and 17 Sep, and never
+once fired:
+
+```sql
+select cron.schedule('push-sweep', '* * * * *', $$ … /functions/v1/push-sweep … $$);
+select cron.schedule('game-release-sweep', '7 * * * *', $$ … /functions/v1/game-release-sweep … $$);
+```
+
+`game-release-sweep` runs hourly rather than daily on purpose: it matches on "release
+day is today", which depends on the timezone you ask from, and
+`shelf_sweep_game_releases` already dedupes, so an hourly pass cannot double-ring.
+The `7` is just an offset off the hour so the three are not all firing together.
+
+To stop one: `select cron.unschedule('vague-search-sweep');` — likewise
+`'push-sweep'`, `'game-release-sweep'`.
+
+**The key trap caught this a THIRD time, and here is how to detect it in seconds.**
+The first scheduled runs all fired successfully (`cron.job_run_details` said
+`succeeded`) and every one of them got **HTTP 401
+`{"error":"this endpoint is for the scheduled sweep only"}`**. `cron` reporting
+success only means the SQL ran; it says nothing about what the endpoint answered.
+The response lives somewhere else entirely:
+
+```sql
+select status_code, content, created from net._http_response order by created desc limit 5;
+```
+
+The cause was the documented one: the Vault secret held the **legacy `service_role`
+JWT**, not the new-format `sb_secret_…` key the deployed functions compare against.
+Note the failure is silent in both directions — the API gateway accepts the legacy
+JWT (it is a real credential), so the request reaches the function and only the
+function's own bearer comparison rejects it. Check the format without ever printing
+the key:
+
+```sql
+select name, decrypted_secret like 'sb_secret_%' as is_new_format
+from vault.decrypted_secrets;
+```
+
+Fix in place, no re-schedule needed — the jobs read the secret by name on every run:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'vague_search_sweep_service_key'),
+  '<paste the NEW-format sb_secret_ key>'
+);
+```
 
 **5. Tell Sola the latency numbers.** Median 25.7s, p90 68.8s, max 227.5s. This
 changes the screen design and it is not a detail he can absorb late.

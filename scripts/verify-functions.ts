@@ -58,6 +58,22 @@ function checkShape(label: string, g: CatalogGame) {
     g.abbreviation);
   check(`${label}: colorKey is one the app can render`,
     (COVER_COLOR_KEYS as readonly string[]).includes(g.colorKey), g.colorKey);
+  // Added 18 Sep 2026. Both of these shipped on CatalogGame and NOTHING here
+  // asserted them, which is exactly how `timeToBeatCount` reached the type and the
+  // SQL row but never the API: toCatalogGame silently dropped it. These are
+  // conditional because neither is on every row -- `summary` covers 97.2% of the
+  // catalog, and a count only exists where a time does -- so the check is
+  // "present and the right type when the data is there", not "always present".
+  if (g.timeToBeatHours != null) {
+    check(`${label}: timeToBeatCount accompanies timeToBeatHours`,
+      typeof g.timeToBeatCount === "number" && g.timeToBeatCount > 0,
+      `${g.timeToBeatHours}h (${g.timeToBeatCount})`);
+  }
+  if (g.summary !== undefined) {
+    check(`${label}: summary is a non-empty string`,
+      typeof g.summary === "string" && g.summary.length > 0,
+      `${g.summary?.slice(0, 40)}...`);
+  }
   if (g.platforms?.length) {
     const p = g.platforms[0];
     check(`${label}: platform ref has id/name/slug`,

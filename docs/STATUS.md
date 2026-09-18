@@ -160,6 +160,7 @@ the decision to start). Josh still owes the push credentials.
 | Question | Answer |
 |---|---|
 | Quick-view description | Raw IGDB `summary`, app truncates |
+| Time-to-beat sample size | **Paul, 18 Sep: no threshold.** Show the hours with the submission count beside it, and put the count in brackets if space is tight: `12 hrs (2)`. **This DOES need backend work** — `ttb_count` is on the SQL row but `toCatalogGame` dropped it, so the API never exposed it. Added as `timeToBeatCount` 18 Sep; needs all five `catalog-game.ts` importers redeployed. Rejected a cutoff because requiring 3 submissions drops 76% of the times we hold and requiring 5 drops 89% (live: 4,954 games have a `normally` value, 2,929 of them from a single submission) |
 | Model-written blurbs (~$5) | **Declined** |
 | Quick-view background art | **Nothing owed** — the app already blurs the cover |
 | Video / GIF background | **Impossible.** YouTube's terms forbid overlays in front of the player; IGDB hosts no video and flattens its 60 animated assets to one frame |
