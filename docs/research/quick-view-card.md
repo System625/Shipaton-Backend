@@ -22,6 +22,28 @@ Every number below was measured against the live catalog or the live IGDB API on
 > That leaves the backend owing exactly **one** thing for this card: return `summary`
 > (§2d). The schema reconciliation in §3e is still owed, but on its own merits.
 
+## START HERE if you are picking this up cold
+
+**Everything in this document is decided. Nothing below needs a meeting.** The build
+is one migration; the rest of the document is the evidence for why it is only one.
+
+| To do | Where | Blocked on |
+|---|---|---|
+| Return `summary` on `CatalogGame` | **§2d** — step-by-step | nobody |
+| Apply the time-to-beat fix (written, committed, NOT run) | **§7** | `! npm run db:push` |
+| Declare the undeclared live schema | **§3e** | nobody |
+
+Do **not** rebuild any of this: model-written blurbs (§2c, declined), a derived
+`blurb` column (§2c, rejected), a background-art fetch (§3d, the app already blurs the
+cover), a video or GIF background (§4, impossible — YouTube's terms, not our budget).
+
+Reproduce any number here with `npm run qv:assets`, `qv:ratios`, `qv:videos`
+(`scripts/quickview-lab/`). The database figures come from the live project; re-run
+them rather than trusting these tables if more than a few weeks have passed.
+
+`docs/STATUS.md` § "PICK UP HERE" carries the same list in project-wide priority
+order.
+
 ---
 
 ## 0. The answer in one paragraph

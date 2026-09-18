@@ -78,7 +78,108 @@ reach it.
 of the already-built Xbox linking flow (nothing else blocks it); OneSignal/APNs/FCM
 credentials from Josh for push delivery; PlayStation and Grouvee linking (not
 started); and one thing blocked on Paul (vague search's "no confident answer"
-UI).**
+UI).** The immediately actionable list is the next section.
+
+---
+
+## PICK UP HERE — what is left to build, 18 Sep evening
+
+Written for someone starting cold. Nothing below is blocked on a decision unless it
+says so. Read this section, then the doc each item names.
+
+### 1. Return `summary` on `CatalogGame` — THE WHOLE QUICK-VIEW BACKEND
+
+Paul's long-press quick-view card needs a description. `games.summary` is populated
+for **89,210 of 91,815 rows (97.2%)** and **no endpoint returns it**. Decided 18 Sep:
+**serve it raw, the app truncates it.** Model-written blurbs were costed and declined;
+a derived `blurb` column was rejected. Do not reopen either — `docs/research/
+quick-view-card.md` §2c.
+
+Steps, which mirror `20260918100000`'s predecessor
+`20260917150000_catalog_release_precision.sql` exactly — copy that file's shape:
+
+1. `alter type shelf_catalog_row add attribute summary text;` — it APPENDS, and every
+   function returning the type must select in attribute order. PostgREST serialises by
+   name, so the trailing position is cosmetic. Do not try to reorder.
+2. `create or replace` the **three** `SETOF shelf_catalog_row` functions —
+   `shelf_search_games`, `shelf_popular_games`, `shelf_roulette` — with the extra
+   column. A replace whose select list still returns the old column count fails
+   against the widened type, which is why all three must be in the same migration as
+   the `alter`.
+3. `create or replace` the **three** `returns table` ones — `shelf_recently_viewed`,
+   `shelf_watched_games`, `shelf_popular_with_friends`.
+   **That count of 3 + 3 came from `pg_proc` on the live database, not from the
+   migrations — see item 3 below for why that distinction matters.**
+4. `create or replace` re-grants `anon`. Check it; it has bitten this project before.
+5. Add `summary` to `/games/:id`'s explicit column list in
+   `supabase/functions/games/index.ts`, and to `CatalogRow` + `toCatalogGame` in
+   `supabase/functions/_shared/catalog-game.ts`.
+6. Tell Sola two things: **30.6% of summaries contain a newline**, so the app must
+   collapse whitespace before clamping to two lines or a blank line eats one of them;
+   and Half-Life 2's summary genuinely opens with `1998.` — that is IGDB's text, not a
+   bug to report.
+
+Payload cost: a median 233 extra characters per catalog row on every list response
+(~5 KB on a 20-item page). Accepted knowingly.
+
+### 2. Apply the time-to-beat fix — WRITTEN AND COMMITTED, NOT APPLIED
+
+`5416053` added `guardTtbOrder()` to `_shared/mapping.ts`, the backfill
+`20260918110000_ttb_monotonicity.sql`, and `npm run verify:ttb`. **The migration has
+not been run**, so the live catalog still says Vice City takes 135h to beat.
+
+- Hand over `! npm run db:push`.
+- Then `npm run verify:ttb`. Its §1 (15 mapper checks) already passes. Its §2 is
+  **designed to fail with `153 left`** until the migration lands — a green §2 is the
+  proof it worked, not a formality.
+
+### 3. Reconcile the migrations with the live schema — OWED, AND IT BITES
+
+The live database holds objects that appear in **no migration in this repo**:
+`games.artwork_url` (46 of 91,815 rows filled — exactly the games in a `posts` row),
+the tables `post_polls`, `post_reposts`, `post_shares`, and a `shelf_feed` returning
+**six more columns** than `20260908213500_social_feed.sql` defines (`game_artwork`,
+`game_year`, `game_genres`, `game_rating`, `game_platforms`, `poll`, `repost_count`,
+`share_count`, `reposted_by_handle`, `reposted_by_name`, `reason`).
+
+Two ways this hurts, and the second is silent:
+
+- `npm run db:reset` produces a database the live app's feed cannot use.
+- A `create or replace function shelf_feed(...)` written from this repo's copy would
+  **delete six columns the app is already reading**, with no error on either side.
+
+So: before touching `games` or any social function, diff the live object out of
+`pg_proc` / `information_schema` rather than trusting the migration file. The fix is
+to write a migration declaring these as they actually are. **Nobody has said who
+applied them** — worth asking.
+
+### 4. Everything else, unchanged from 15 Sep
+
+Xbox human test (nothing else unblocks it) → PlayStation → Grouvee importer (scoped
+and measured at 75.9%, clears Josh's 70% bar) → vague search (waiting on nothing but
+the decision to start). Josh still owes the push credentials.
+
+### Decided 18 Sep — do NOT reopen
+
+| Question | Answer |
+|---|---|
+| Quick-view description | Raw IGDB `summary`, app truncates |
+| Model-written blurbs (~$5) | **Declined** |
+| Quick-view background art | **Nothing owed** — the app already blurs the cover |
+| Video / GIF background | **Impossible.** YouTube's terms forbid overlays in front of the player; IGDB hosts no video and flattens its 60 animated assets to one frame |
+
+### Open, and NOT engineering calls
+
+- **Paul:** time-to-beat sample size. 57.7% of surviving `normally` values (2,947 of
+  5,106) rest on a single submission, 84.0% on three or fewer, and the app shows the
+  number with no sample size beside it. `ttb_count` is already on the row, so this is
+  a wording decision, not a build.
+- **Josh:** IGDB commercial use. The app credits *"Game data and cover art from
+  IGDB.com"*, which is right, but secondary sources say the API is free for
+  **non-commercial** use with commercial projects directed to a partnership — and
+  Prysm is going paid. **Unverified:** `api-docs.igdb.com` and `igdb.com/api` both 403
+  automated fetches, so a human with a browser has to read the real terms. Treat it as
+  a flag, not a finding.
 
 ---
 
