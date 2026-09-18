@@ -44,6 +44,14 @@ export type CatalogGame = {
   criticScore?: number;
   abbreviation: string;
   colorKey: CoverColorKey;
+  /**
+   * IGDB's summary, raw -- the app truncates it. Present for 89,210 of 91,815
+   * catalog rows (97.2%). 30.6% contain a newline, so collapse whitespace before
+   * clamping to two lines or a blank line eats one of them. Decided 18 Sep 2026:
+   * no server-side truncation, no model-written blurb. See
+   * docs/research/quick-view-card.md §2c.
+   */
+  summary?: string;
 };
 
 // The row shape returned by shelf_search_games / shelf_roulette.
@@ -61,6 +69,7 @@ export type CatalogRow = {
   platforms: PlatformRef[] | null;
   score?: number | null;
   release_precision?: "day" | "month" | "quarter" | "year" | null;
+  summary?: string | null;
 };
 
 const NOISE_WORDS = new Set(["the", "of", "a", "an", "and", "de", "la", "el"]);
@@ -106,5 +115,6 @@ export function toCatalogGame(row: CatalogRow): CatalogGame {
     criticScore: row.critic_score ?? undefined,
     abbreviation: deriveAbbreviation(row.title),
     colorKey: deriveColorKey(row.title),
+    summary: row.summary ?? undefined,
   };
 }

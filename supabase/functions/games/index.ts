@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
     .from("games")
     .select(
       "id, title, slug, release_date, release_precision, genres, cover_url, critic_score, " +
-      "ttb_normally_hours, ttb_count, session_fit, " +
+      "ttb_normally_hours, ttb_count, session_fit, summary, " +
       "game_platforms(platforms(id, name, slug))",
     )
     .eq("id", segment)
