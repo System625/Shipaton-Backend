@@ -167,16 +167,13 @@ the decision to start). Josh still owes the push credentials.
 
 ### Open, and NOT engineering calls
 
-- **Paul:** time-to-beat sample size. 57.7% of surviving `normally` values (2,947 of
-  5,106) rest on a single submission, 84.0% on three or fewer, and the app shows the
-  number with no sample size beside it. `ttb_count` is already on the row, so this is
-  a wording decision, not a build.
-- **Josh:** IGDB commercial use. The app credits *"Game data and cover art from
-  IGDB.com"*, which is right, but secondary sources say the API is free for
-  **non-commercial** use with commercial projects directed to a partnership — and
-  Prysm is going paid. **Unverified:** `api-docs.igdb.com` and `igdb.com/api` both 403
-  automated fetches, so a human with a browser has to read the real terms. Treat it as
-  a flag, not a finding.
+- ~~**Paul:** time-to-beat sample size.~~ **ANSWERED 18 Sep 2026: no threshold, show
+  the count beside the hours, `12 hrs (2)` when space is tight.** Shipped as
+  `timeToBeatCount` on `CatalogGame` — which turned out to be a build after all, not
+  just wording: `ttb_count` was on the SQL row but `toCatalogGame` dropped it, so the
+  API had never exposed it. Handoff: `docs/time-to-beat-for-sola.md`.
+- ~~**Josh:** IGDB commercial use.~~ **CLOSED 18 Sep 2026** — checked in a browser
+  (automated fetches 403 behind Cloudflare) and confirmed fine. Do not re-raise.
 
 ---
 
