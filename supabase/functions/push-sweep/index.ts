@@ -87,7 +87,10 @@ Deno.serve(async (req) => {
       console.error(`notification ${row.id} (${row.kind}) has no name to render`);
       continue;
     }
-    const { title, body } = pushCopyFor(row.kind as "follow" | "post_like" | "post_comment" | "game_release", name);
+    const { title, body } = pushCopyFor(
+      row.kind as "follow" | "post_like" | "post_comment" | "game_release" | "post_repost" | "post_mention",
+      name,
+    );
     try {
       await sendOneSignalPush(apiKey, appId, { externalId: row.user_id, title, body });
       await admin.from("notifications").update({ pushed_at: new Date().toISOString() }).eq("id", row.id);

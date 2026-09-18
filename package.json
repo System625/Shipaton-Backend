@@ -39,6 +39,7 @@
     "verify:game-watches": "tsx scripts/verify-game-watches.ts",
     "verify:onboarding": "tsx scripts/verify-onboarding.ts",
     "verify:ttb": "tsx scripts/verify-ttb.ts",
+    "verify:feed": "tsx scripts/verify-feed.ts",
     "lab:steam-library": "tsx scripts/link-lab/real-steam-library.ts",
     "lab:xbox-bridge": "tsx scripts/link-lab/xbox-title-bridge.ts",
     "android:manifest": "tsx scripts/generate-android-manifest.ts",

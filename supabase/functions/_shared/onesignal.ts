@@ -56,7 +56,7 @@ export async function sendOneSignalPush(
 // `name` is the actor's display name for the three social kinds, and the game's
 // title for `game_release` — there is no actor to name (20260917130000).
 export function pushCopyFor(
-  kind: "follow" | "post_like" | "post_comment" | "game_release",
+  kind: "follow" | "post_like" | "post_comment" | "game_release" | "post_repost" | "post_mention",
   name: string,
 ): { title: string; body: string } {
   switch (kind) {
@@ -68,5 +68,9 @@ export function pushCopyFor(
       return { title: "New comment", body: `${name} commented on your post` };
     case "game_release":
       return { title: "Out today", body: `${name} just released` };
+    case "post_repost":
+      return { title: "New repost", body: `${name} reposted your post` };
+    case "post_mention":
+      return { title: "New mention", body: `${name} mentioned you in a post` };
   }
 }

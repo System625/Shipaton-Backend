@@ -82,6 +82,15 @@ the ttb migration was found already applied; and the schema-declaration migratio
 turned out to cover a live `shelf_feed` with 28 columns and a whole ranking tier
 this repo never had, not the six columns first estimated — see "PICK UP HERE" §§1–3.
 
+**18 Sep, still later: the friends-feed build shipped and is verified live.** Four
+migrations (repost notifications, `posts.visibility` with mutual-follow "friends",
+`private.post_cards` + `shelf_post`, mention notifications), pushed; `push-sweep`
+redeployed for the two notification kinds it gained. `npm run verify:feed` — 30
+checks — passes, and `verify:social` / `verify:notifications` still pass untouched.
+The security and performance advisors were run after and show nothing new —
+`post_cards` is not flagged as a security-definer view. See "PICK UP HERE" §0 and
+`docs/friends-feed-for-sola.md` for the app-facing contract.
+
 **What is left across the whole project, in priority order: an actual human test
 of the already-built Xbox linking flow (nothing else blocks it); OneSignal/APNs/FCM
 credentials from Josh for push delivery; PlayStation and Grouvee linking (not
@@ -97,8 +106,45 @@ says so. Read this section, then the doc each item names.
 
 **Items 1–3 below (quick-view summary, the ttb fix, the undeclared live schema) are
 now DONE, pushed and verified live** — see the three sub-sections for the record.
-**The live workstream is now item 4: Xbox human test → PlayStation → Grouvee
-importer → vague search.**
+**The live workstream is now item 0, then item 4: Xbox human test → PlayStation →
+Grouvee importer → vague search.**
+
+### 0. The Friends feed — SHIPPED 18 Sep, pushed, deployed and verified live
+
+Sola's note arrived as `task.md`. **It was stale — implementing §3 literally would
+have broken screens that work today.** Roughly 70% of what it asked for was already
+live — declared hours earlier by `20260918120000_declare_live_social_schema.sql` —
+and the app repo has since merged a database-backed feed that reads all 29 columns
+`shelf_feed` returns, votes in polls and reposts through PostgREST. The reasoning,
+the evidence, and the full build plan are in **`docs/research/friends-feed.md`**;
+the app-facing contract is in **`docs/friends-feed-for-sola.md`**.
+
+Four things were genuinely missing, and are now written as four migrations:
+
+1. `post_repost` notifications — `20260918160000_repost_notifications.sql`. 24
+   reposts had already happened and notified nobody.
+2. `posts.visibility` — `20260918170000_post_visibility.sql`. **`friends` means
+   mutual follow** (145 such pairs live, so it demos on existing data). Also closes
+   a live hole this surfaced: `post_likes` was the one write policy of four that
+   never checked the post was visible.
+3. `private.post_cards` + `shelf_post(p_post_id)` — `20260918180000_post_by_id.sql`.
+   Not in the note; asked for in the app's own source, which was paging through up
+   to 200 feed rows to open one post. Factored the shared projection into a view so
+   `shelf_feed` and `shelf_post` can't drift the way this repo's copy of
+   `shelf_feed` already had once.
+4. Mention notifications — `20260918190000_mention_notifications.sql`. Capped at 10
+   per post.
+
+`_shared/onesignal.ts` and `push-sweep/index.ts` gained `post_repost` and
+`post_mention` push copy (steps 1 and 4 ship together so `push-sweep` deploys
+once), and `scripts/verify-feed.ts` (`npm run verify:feed`) covers all four.
+
+**Nothing left backend-side.** The one finding from the research that is *not*
+caused by this build and is still open: the app's notification inbox will render a
+blank row on the first `game_release` row (0 exist today, the kind is already
+live) — that's a client fix owed to Sola, spelled out in
+`docs/friends-feed-for-sola.md`, along with everything else the app needs to pick
+this up (`shelf_post`, `p_visibility`, the two new notification kinds).
 
 ### 1. Return `summary` on `CatalogGame` — DONE 18 Sep, pushed and deployed
 

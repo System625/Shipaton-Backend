@@ -254,48 +254,20 @@ stay private.
 
 ---
 
-## 4. Friends feed and notifications: built, waiting on the app
+## 4. Friends feed and notifications — see the dedicated doc
 
-The Friends tab is still `FRIEND_POSTS` in `LibraryScreen.tsx`. The backend for all of
-it has existed since 9 Sep. Payloads are in the API reference; the short version:
+This section used to say the Friends tab was still `FRIEND_POSTS` and that
+notifications were in-app only with no push. Both are stale — as of your app's own
+HEAD (`f1c4bfa`, 18 Sep) the feed is database-backed, category/polls/votes/reposts/
+shares are all live and wired into your app, and push has shipped separately
+(`docs/prysm-pro-for-sola.md`'s sibling, the OneSignal push work, memory:
+[[shelf-push-notifications-onesignal]]).
 
-**First, write a `profiles` row on first sign-in.** Nothing in the app does this yet, and
-**without it the feed and the notification inbox both render empty**:
-
-| Field | Rule |
-|---|---|
-| `user_id` | the signed-in user's id |
-| `handle` | lowercase, `^[a-z0-9_]{3,20}$`, unique. Taken = `23505` |
-| `display_name` | 1–40 characters |
-| `avatar_color` | one of your ten `coverColors` keys. Defaults to `slate` |
-| `bio` | optional, up to 160 |
-
-**It's follow, not friendship.** A follows B needs nothing from B, which matches the
-follower/following counts your UI already shows.
-
-- **Posts:** insert into `posts` with `author_id`, `body`, and optionally `link_url`,
-  `game_id` and `image_path`. Images go in the `post-images` storage bucket, and **the
-  path must start with the user's id** (`<user id>/whatever.jpg`), or the upload is
-  refused.
-- **Reading the feed:** `rpc('shelf_feed', { p_limit, p_before, p_before_id, p_handle })`.
-  Pagination uses a cursor: pass the last row's `created_at` and `id` for the next page.
-  Leave out `p_handle` for the feed, and pass one for a profile's posts.
-- **Profile header counts:** `rpc('shelf_profile_stats', { p_handle })`.
-- **Likes and comments:** `post_likes` and `post_comments`. Liking twice (or following
-  twice) is rejected with `23505`, never counted twice, so treat that code as "already
-  done".
-  A post's author can delete comments on their post.
-- **Blocks and reports:** `user_blocks` and `content_reports`. App Store review
-  (guideline 1.2) requires both before user-generated content ships, so they need a
-  place in the UI, even a small one.
-- **The inbox:** `rpc('shelf_notifications', { p_limit, p_before, p_before_id, p_unread_only })`,
-  `rpc('shelf_unread_notification_count')` for the badge, and
-  `rpc('shelf_mark_notifications_read', { p_ids })` (leave out `p_ids` to mark all
-  read). It covers follows, likes and comments. It's **in-app only, no push**. Push can
-  be added later without changing any of this.
-
-Libraries and share history stay private to their owner. Nothing in the feed shows what
-someone has in their library.
+What's actually new on top of that, from a fresh pass done 18 Sep — repost
+notifications (silent until now), `posts.visibility` (a `friends` audience, mutual
+follow only), `shelf_post(p_post_id)` to replace your `findPostById` scan, and
+mention notifications — is in **`docs/friends-feed-for-sola.md`**, not here. That's
+now the only place this contract lives.
 
 ---
 
