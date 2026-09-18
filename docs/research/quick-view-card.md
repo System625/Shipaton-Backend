@@ -20,8 +20,10 @@ Every number below was measured against the live catalog or the live IGDB API on
 >   that outlived this feature.
 > - **The undeclared live schema (§3e) is declared** — migration
 >   `20260918120000_declare_live_social_schema.sql`. It turned out to be much bigger
->   than first estimated, and it explains a mystery this doc originally left open
->   (who's been touching `games.artwork_url` outside this repo — see §3e's update).
+>   than first estimated, and it turned up `game-artwork` — the edge function behind
+>   `games.artwork_url` — which was planned in an earlier session as the answer to
+>   this same `task.md` background-art question, but had never had its source added
+>   to this repo. Now imported: `supabase/functions/game-artwork/index.ts`.
 > - **The time-to-beat fix (§7) was already applied before the shipping session
 >   started.** Confirmed live and via `npm run verify:ttb`.
 > - **One more gap, found and fixed the same night, not in the original brief:**
@@ -50,8 +52,11 @@ Reproduce any number here with `npm run qv:assets`, `qv:ratios`, `qv:videos`
 them rather than trusting these tables if more than a few weeks have passed.
 
 `docs/STATUS.md` § "PICK UP HERE" carries the same list in project-wide priority
-order. `docs/technical-notes-for-sola.md` carries the app-facing contract for
-`summary` — the concise version of §2d written for the person actually consuming it.
+order. **`docs/quick-view-card-for-sola.md` is the file that actually goes to
+Sola** — one self-contained doc covering both `summary` and `game-artwork`, the same
+way `docs/onboarding-for-sola.md` covers onboarding. Don't send him
+`docs/technical-notes-for-sola.md` or this research doc; both are for whoever
+touches the backend next, not for him.
 
 ---
 
@@ -70,9 +75,11 @@ YouTube's own terms forbid exactly the use `task.md` describes, and IGDB's anima
 assets are flattened to a single frame before they leave the CDN. Along the way:
 **the live database held a `games.artwork_url` column, the poll/repost/share tables,
 and a real `shelf_feed` that existed in no migration here — all now declared** (§3e),
-and that work turned up the actual mechanism nobody had found yet: a live edge
-function, `game-artwork`, that fills `artwork_url` on demand and has no source
-anywhere in this repo. Details below.
+and that work turned up the mechanism behind the column: a live edge function,
+`game-artwork`, planned in an earlier session as the answer to this same
+background-art question, whose source had never been added to this repo. Now
+imported. Details below, and the app-facing contract is in
+`docs/quick-view-card-for-sola.md`.
 
 ---
 
@@ -86,7 +93,7 @@ anywhere in this repo. Details below.
 | "Playing Now" | `library_entries.status` | Live — the app already reads this table directly over PostgREST |
 | Platform icons | `CatalogGame.platforms[]` | Live |
 | Save | `wishlist_entries` | Live since 11 Sep |
-| **Background art** | `games.artwork_url` | **Exists live; this feature owes it nothing (§3d). A separate, undeclared edge function (`game-artwork`) fills it on demand for the social feed — see §3e.** |
+| **Background art** | `games.artwork_url` | **Exists live; this feature owes it nothing extra (§3d). Filled on demand by `game-artwork`, planned in an earlier session and now declared in the repo — see §3e and `docs/quick-view-card-for-sola.md`.** |
 
 The card is fully servable from `CatalogGame` as of 18 Sep night: cover, title,
 description, playing-now status, platforms and Save all come from data the app
@@ -368,8 +375,9 @@ the game detail screen today — confirmed from a screenshot of the running buil
 (GTA: Vice City, cover blurred edge-to-edge behind the card). So steps 1 and 2 above
 were **not built for this feature**: no screenshot backfill, no `artwork_url` fill,
 nothing fetched by the quick-view work. This section stays as the record of what was
-measured and why the cheap answer was also the right one — and see §3e for why
-options 1/2 turned out to already be *partially* built, by something else entirely.
+measured and why the cheap answer was also the right one — and see §3e for
+`game-artwork`, which already does exactly this (built in an earlier session for the
+same `task.md` ask) and is now declared in this repo.
 
 Storage, for the record: one ~70-character URL × 91,815 rows ≈ 6 MB. The database is
 at 315 MB of the 500 MB free tier, so this is affordable — but note the pgvector
@@ -377,15 +385,15 @@ plan in `semantic-search.md` §7 budgets ~193 MB for embeddings over the full ca
 and 315 + 193 already exceeds 500. The background column is not what breaks that
 budget, but it should not be spent without knowing the budget is tight.
 
-### 3e. There was already an `artwork_url` column, and it wasn't in this repo — DECLARED 18 Sep night
+### 3e. There was already an `artwork_url` column, and it wasn't in this repo — DECLARED and IMPORTED 18 Sep night
 
 Found 18 Sep daytime while sizing the migration; declared 18 Sep night via
 `supabase/migrations/20260918120000_declare_live_social_schema.sql`, pushed and
 verified live.
 
 `games.artwork_url text` existed on the live database, in no file under
-`supabase/migrations/`, no edge function, no script. Neither did the live
-`shelf_feed`, nor the live tables `post_polls`, `post_reposts` and `post_shares`.
+`supabase/migrations/`. Neither did the live `shelf_feed`, nor the live tables
+`post_polls`, `post_reposts` and `post_shares`.
 
 **What this section originally said, and what turned out to be wrong (undercounted,
 not incorrect in kind):** it described `shelf_feed` as returning "six more columns"
@@ -400,34 +408,31 @@ functions running the whole poll feature (`shelf_poll`, `shelf_create_post`,
 every other `shelf_%` function in this project. Closed as part of the same
 migration; no behaviour change for an authenticated caller.
 
-**The mystery this section left open — "who applied `artwork_url`?" — has a partial
-answer, found while declaring the schema.** There is a live edge function,
-`game-artwork`, with **no source anywhere in this repo, not even in git history**
-(`git log --all -- supabase/functions/game-artwork` returns nothing). Its full
-source, pulled live 18 Sep night:
+**`games.artwork_url` itself is filled by `game-artwork`, an edge function that was
+live on the project but had no source in this repo — not a mystery, a planning gap.**
+It was planned in an earlier session as the direct answer to `task.md`'s
+background-art question (the same brief this whole document analyses), built and
+deployed, but its source was never committed here — the first sign of that was its
+`created_at` sorting after every other function's last `updated_at` on the project.
+**Imported 18 Sep night**: `supabase/functions/game-artwork/index.ts`, pulled
+verbatim from the live deployment, declaring it the same way the schema above was
+declared. The app-facing contract for it — request/response shape, how it resolves
+an image, what it costs to call — is written up properly for the first time in
+`docs/quick-view-card-for-sola.md` §2.
+
+What it does, for anyone reading this doc rather than the contract doc:
 
 - `POST game-artwork {"gameIds": string[]}` (50 max) → `{"artwork": {"<uuid>":
   "<url or ''>"}}`.
 - Callable by any signed-in user (checks the JWT's `role` claim for `authenticated`
-  or `service_role`) — **not just the service role**, which the functions built in
-  this repo generally reserve for write paths that spend a shared quota.
+  or `service_role`), not only the service role — worth noting because most write
+  paths built in this repo reserve shared-quota spending for the service role, but
+  not a problem: it's meant to be called from the app.
 - For each requested game with `artwork_url is null`, queries IGDB `screenshots`
-  then `artworks` (same fallback order §3d recommended, and the same
-  `t_screenshot_huge` size token noted below), writes the result back with
+  then `artworks` (the same fallback order §3d independently arrived at, and the
+  same `t_screenshot_huge` size token noted below), writes the result back with
   `.is('artwork_url', null)` so a parallel call can't clobber another's write, and
   caches an empty string for "IGDB has nothing" so it isn't asked again.
-- Deployed very recently relative to every other function on the project (its
-  `created_at` sorts after every other function's last `updated_at` except this
-  session's own redeploys) — consistent with it being the thing that produced the
-  46-row backfill this section originally measured, though that is inference, not
-  confirmed.
-
-This **answers "something is filling `artwork_url`," but not "who wrote and deployed
-it," and not why it exists nowhere in this repo.** Both are still worth asking.
-**Not imported into this repo as part of this session** — flagged here rather than
-silently absorbed, since it's callable by any signed-in user and spends the
-project's shared IGDB quota with no rate limit of its own, which is a real surface
-worth a deliberate decision rather than a drive-by import.
 
 Its own numbers, for the record:
 
@@ -439,16 +444,20 @@ Its own numbers, for the record:
   For a card that appears on a long press, 940×529 at ~30–80 KB is still the better
   pick if this is ever revisited for the quick-view card specifically.
 
-Two consequences that made this worth declaring regardless of who wrote
-`game-artwork`:
+Two consequences that made this worth declaring even though the function turned out
+to be planned work rather than a mystery:
 
 1. `npm run db:reset` would have produced a database the live app's feed cannot use.
 2. A `create or replace function shelf_feed(...)` written from this repo's old copy
    would have silently deleted the 28 columns above, with no error on either side.
 
-This is the fifth time dead or undeclared config in this project has been found
-asserting something untrue about the live system, and the discovery of a whole
-undeclared edge function makes it likely not the last.
+This is the fifth time work that happened outside this repo's normal commit-and-push
+flow has been found asserting something untrue about the live system — not because
+the work itself was wrong, but because nothing here recorded that it existed.
+**When work is built this way again — deployed straight from a session without a
+local file, however legitimate — commit the source here in the same session, not
+later.** That's the actual fix; the schema/function declaration this section
+describes is the cleanup, not the prevention.
 
 ---
 
@@ -513,7 +522,7 @@ coverage, and it breaks nobody's terms.
 | 1b | Fix `_shared/games-by-ids.ts`'s own gap (§2e) | one line | **SHIPPED 18 Sep night** |
 | 2 | Blurred-cover background, app-side | zero backend | Already shipped in the app before this feature started |
 | 3 | Reconcile the migrations with the live schema (§3e) | bigger than estimated | **SHIPPED 18 Sep night** |
-| ~~4~~ | ~~Fill `artwork_url` from IGDB screenshots~~ | — | **CANCELLED 18 Sep** — blurred cover already live, and a separate undeclared function does this for the feed already (§3e) |
+| ~~4~~ | ~~Fill `artwork_url` from IGDB screenshots~~ | — | **CANCELLED for this feature** — blurred cover already live; `game-artwork` already does this, built in an earlier session, now declared (§3e) |
 | ~~5~~ | ~~Model-written blurbs~~ | — | **DECLINED 18 Sep** |
 
 **The whole quick-view backend is items 1 and 1b.** Item 2 was already shipped in
@@ -531,10 +540,12 @@ than expected, and worth its own read (§3e).
 
 Still owed to people, and not decided here:
 
-- **Sola:** the `summary` contract is documented in
-  `docs/technical-notes-for-sola.md`. He owes the whitespace collapse before
-  clamping (30.6% of summaries contain a newline) and the ellipsis, if he wants one.
-- **Josh, three things raised that nobody has answered:**
+- **Sola:** the whole contract — `summary` and `game-artwork` both — is
+  `docs/quick-view-card-for-sola.md`. He owes the whitespace collapse before
+  clamping (30.6% of summaries contain a newline), the ellipsis if he wants one, and
+  the call as to whether the quick-view card calls `game-artwork` at all or ships
+  with just the blurred cover.
+- **Josh, two things raised that nobody has answered:**
   1. **IGDB attribution and commercial use.** The app already carries *"Game data and
      cover art from IGDB.com"* on the detail screen, which is the right instinct —
      IGDB asks for credit. But secondary sources also state the API is free **for
@@ -547,10 +558,6 @@ Still owed to people, and not decided here:
      prose, not just data and covers.
   2. **Time-to-beat sample size** — see §7. The ordering bug is fixed; the sample-size
      question is Paul's wording call, not a build.
-  3. **Who wrote and deployed `game-artwork`, and why it isn't in this repo** — §3e.
-     Separately from "who applied the schema," this is now a specific, nameable
-     artifact: a whole edge function, live, that any signed-in user can call to spend
-     the project's shared IGDB quota.
 
 ---
 
