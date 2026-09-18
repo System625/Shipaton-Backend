@@ -1097,3 +1097,48 @@ Shipped 18 Sep. This one has its own file so you don't have to read this whole
 document to get to it: **`docs/onboarding-for-sola.md`** — the `profiles.platforms`
 write path, the `shelf_suggested_users` contract, and the open questions logged for
 your answer.
+
+---
+
+## 16. New (18 Sep night): `summary` on every `CatalogGame` — the quick-view card
+
+Shipped the night of 18 Sep, for Paul's long-press quick-view card mock. Full
+reasoning and every measurement behind it: `docs/research/quick-view-card.md`.
+
+Every `CatalogGame` now carries `summary`: IGDB's own description text, returned
+**raw, untruncated**. It reaches you everywhere a `CatalogGame` does —
+`/search`, `/games/:id`, `/games/popular`, `/games/popular-with-friends`,
+`/games/recently-viewed`, `/games/watching`, `/roulette`, and the candidates array
+inside `/share-resolve` and `/vague-search`. Absent (not empty string) on the 2.8%
+of the catalog IGDB has no summary for.
+
+```jsonc
+{
+  // …the usual CatalogGame fields…
+  "summary": "Grand Theft Auto V is a vast open world game set in Los Santos…"
+}
+```
+
+**Three things you own, not us:**
+
+1. **Truncate it yourself.** It's a full paragraph — median 233 characters, up to
+   9,844 on the longest row. We deliberately did not clamp it server-side (a
+   model-written short blurb was costed at ~$5 and declined; a derived short column
+   was also rejected) — see the research doc §2c if you want the reasoning, but the
+   decision is closed, don't re-raise it.
+2. **Collapse whitespace before you clamp.** 30.6% of summaries contain a literal
+   newline. Clamp-to-two-lines on the raw string spends one of those two lines on a
+   blank for nearly a third of games. Collapse `\s+` to a single space first.
+3. **`1998.` is not a bug.** Half-Life 2's summary genuinely opens with a dateline —
+   IGDB's text, not ours to fix. If a QA report calls this out, it's expected.
+
+No ellipsis is added server-side either — add one on truncation if the design wants
+it.
+
+**Nothing else about the card needs backend work.** The background is the blurred
+cover you're already rendering behind the detail screen; "Playing Now" reads
+`library_entries.status`, which you already read directly; Save is
+`wishlist_entries`, live since 11 Sep. A video/GIF background was researched and
+ruled out entirely (YouTube's terms forbid an overlay on top of an embedded player,
+and IGDB has no usable video) — not a build we skipped, a thing that cannot ship at
+all.
