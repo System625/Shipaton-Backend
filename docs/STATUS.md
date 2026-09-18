@@ -74,6 +74,14 @@ reasoning behind it — is one file: `docs/onboarding-for-sola.md`, not a sectio
 `technical-notes-for-sola.md`, so Sola doesn't have to read the whole running log to
 reach it.
 
+**18 Sep, later that night: the quick-view card's backend, the ttb fix, and the
+undeclared live schema are all done.** `summary` now reaches `/search`,
+`/games/:id`, `/games/popular` and `/roulette` (three edge functions redeployed,
+not just the migration — each bundles its own copy of `_shared/catalog-game.ts`);
+the ttb migration was found already applied; and the schema-declaration migration
+turned out to cover a live `shelf_feed` with 28 columns and a whole ranking tier
+this repo never had, not the six columns first estimated — see "PICK UP HERE" §§1–3.
+
 **What is left across the whole project, in priority order: an actual human test
 of the already-built Xbox linking flow (nothing else blocks it); OneSignal/APNs/FCM
 credentials from Josh for push delivery; PlayStation and Grouvee linking (not
@@ -82,78 +90,66 @@ UI).** The immediately actionable list is the next section.
 
 ---
 
-## PICK UP HERE — what is left to build, 18 Sep evening
+## PICK UP HERE — what is left to build, 18 Sep night
 
 Written for someone starting cold. Nothing below is blocked on a decision unless it
 says so. Read this section, then the doc each item names.
 
-### 1. Return `summary` on `CatalogGame` — THE WHOLE QUICK-VIEW BACKEND
+**Items 1–3 below (quick-view summary, the ttb fix, the undeclared live schema) are
+now DONE, pushed and verified live** — see the three sub-sections for the record.
+**The live workstream is now item 4: Xbox human test → PlayStation → Grouvee
+importer → vague search.**
 
-Paul's long-press quick-view card needs a description. `games.summary` is populated
-for **89,210 of 91,815 rows (97.2%)** and **no endpoint returns it**. Decided 18 Sep:
-**serve it raw, the app truncates it.** Model-written blurbs were costed and declined;
-a derived `blurb` column was rejected. Do not reopen either — `docs/research/
-quick-view-card.md` §2c.
+### 1. Return `summary` on `CatalogGame` — DONE 18 Sep, pushed and deployed
 
-Steps, which mirror `20260918100000`'s predecessor
-`20260917150000_catalog_release_precision.sql` exactly — copy that file's shape:
+Migration `20260918130000_catalog_summary.sql`: widened `shelf_catalog_row`,
+recreated the three `SETOF` functions and the three `returns table` ones exactly as
+this section used to prescribe. Added `summary` to `/games/:id`'s column list and to
+`CatalogRow`/`toCatalogGame`. **Also redeployed `games`, `search` and `roulette`** —
+each bundles its own copy of `_shared/catalog-game.ts`, so the code change alone
+would not have reached any endpoint but `/games/:id` and `/games/popular` (which
+share the `games` function) until those three were redeployed too.
+`share-resolve`/`games-by-ids.ts` was deliberately left alone: it never selected
+`release_precision` either, and that gap predates this change — flagged, not fixed,
+since it was outside this migration's scope.
 
-1. `alter type shelf_catalog_row add attribute summary text;` — it APPENDS, and every
-   function returning the type must select in attribute order. PostgREST serialises by
-   name, so the trailing position is cosmetic. Do not try to reorder.
-2. `create or replace` the **three** `SETOF shelf_catalog_row` functions —
-   `shelf_search_games`, `shelf_popular_games`, `shelf_roulette` — with the extra
-   column. A replace whose select list still returns the old column count fails
-   against the widened type, which is why all three must be in the same migration as
-   the `alter`.
-3. `create or replace` the **three** `returns table` ones — `shelf_recently_viewed`,
-   `shelf_watched_games`, `shelf_popular_with_friends`.
-   **That count of 3 + 3 came from `pg_proc` on the live database, not from the
-   migrations — see item 3 below for why that distinction matters.**
-4. `create or replace` re-grants `anon`. Check it; it has bitten this project before.
-5. Add `summary` to `/games/:id`'s explicit column list in
-   `supabase/functions/games/index.ts`, and to `CatalogRow` + `toCatalogGame` in
-   `supabase/functions/_shared/catalog-game.ts`.
-6. Tell Sola two things: **30.6% of summaries contain a newline**, so the app must
-   collapse whitespace before clamping to two lines or a blank line eats one of them;
-   and Half-Life 2's summary genuinely opens with `1998.` — that is IGDB's text, not a
-   bug to report.
+Verified live: `npm run verify:functions` and `verify:roulette` both pass clean
+(no regression), plus a direct authenticated fetch confirming `summary` reaches
+`/games/popular`, `/games/:id` and `/search`. Tell Sola: **30.6% of summaries
+contain a newline**, so the app must collapse whitespace before clamping to two
+lines; Half-Life 2's summary genuinely opens with `1998.` — that is IGDB's text, not
+a bug to report.
 
-Payload cost: a median 233 extra characters per catalog row on every list response
-(~5 KB on a 20-item page). Accepted knowingly.
+### 2. Apply the time-to-beat fix — DONE, already applied before this session
 
-### 2. Apply the time-to-beat fix — WRITTEN AND COMMITTED, NOT APPLIED
+`20260918110000_ttb_monotonicity.sql` was already live when this session started
+(someone ran `db:push` since the memory describing it as pending was written).
+Confirmed 18 Sep night: Vice City's `ttb_*` columns are null, not 135h, and
+`npm run verify:ttb` passes both §1 and §2 clean (no "153 left").
 
-`5416053` added `guardTtbOrder()` to `_shared/mapping.ts`, the backfill
-`20260918110000_ttb_monotonicity.sql`, and `npm run verify:ttb`. **The migration has
-not been run**, so the live catalog still says Vice City takes 135h to beat.
+### 3. Reconcile the migrations with the live schema — DONE 18 Sep, bigger than
+###    this section said
 
-- Hand over `! npm run db:push`.
-- Then `npm run verify:ttb`. Its §1 (15 mapper checks) already passes. Its §2 is
-  **designed to fail with `153 left`** until the migration lands — a green §2 is the
-  proof it worked, not a formality.
+Migration `20260918120000_declare_live_social_schema.sql`, applied before item 1
+(as this section always said it must be). Queried `pg_proc`/`information_schema`
+directly rather than trusting the estimate below — the live `shelf_feed` actually
+returns **28 columns**, not "six more": a whole friends-of-friends + trending-posts
+ranking tier this repo never had, plus `poll`/`repost_count`/`share_count`/
+`reposted_by_*`/`reason`. Two more undeclared tables turned up
+(`post_poll_options`, `post_poll_votes`), an undeclared `posts.category` column, and
+three undeclared functions (`shelf_poll`, `shelf_create_post`, `shelf_vote_poll`).
+**Found while declaring those three: none had ever been revoked from `anon`**,
+unlike every other `shelf_%` function here — closed as part of the same migration.
+Still nobody has said who applied any of this outside the repo; still worth asking.
 
-### 3. Reconcile the migrations with the live schema — OWED, AND IT BITES
+Original scope for the record: the live database held objects appearing in no
+migration here — `games.artwork_url` (46 of 91,815 rows filled — exactly the games
+in a `posts` row), the tables `post_polls`, `post_reposts`, `post_shares`, and the
+under-counted `shelf_feed` above. `npm run db:reset` would have produced a database
+the live app's feed cannot use; a `create or replace function shelf_feed(...)`
+written from this repo's old copy would have silently deleted every column above.
 
-The live database holds objects that appear in **no migration in this repo**:
-`games.artwork_url` (46 of 91,815 rows filled — exactly the games in a `posts` row),
-the tables `post_polls`, `post_reposts`, `post_shares`, and a `shelf_feed` returning
-**six more columns** than `20260908213500_social_feed.sql` defines (`game_artwork`,
-`game_year`, `game_genres`, `game_rating`, `game_platforms`, `poll`, `repost_count`,
-`share_count`, `reposted_by_handle`, `reposted_by_name`, `reason`).
-
-Two ways this hurts, and the second is silent:
-
-- `npm run db:reset` produces a database the live app's feed cannot use.
-- A `create or replace function shelf_feed(...)` written from this repo's copy would
-  **delete six columns the app is already reading**, with no error on either side.
-
-So: before touching `games` or any social function, diff the live object out of
-`pg_proc` / `information_schema` rather than trusting the migration file. The fix is
-to write a migration declaring these as they actually are. **Nobody has said who
-applied them** — worth asking.
-
-### 4. Everything else, unchanged from 15 Sep
+### 4. Everything else, unchanged from 15 Sep — the live workstream now
 
 Xbox human test (nothing else unblocks it) → PlayStation → Grouvee importer (scoped
 and measured at 75.9%, clears Josh's 70% bar) → vague search (waiting on nothing but
