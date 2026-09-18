@@ -14,8 +14,8 @@ export async function catalogGamesByIds(
   const { data, error } = await supabase
     .from("games")
     .select(
-      "id, title, slug, release_date, genres, cover_url, critic_score, " +
-      "ttb_normally_hours, ttb_count, session_fit, " +
+      "id, title, slug, release_date, release_precision, genres, cover_url, critic_score, " +
+      "ttb_normally_hours, ttb_count, session_fit, summary, " +
       "game_platforms(platforms(id, name, slug))",
     )
     .in("id", ids);
